@@ -1,0 +1,22 @@
+# Cached and derived data -- regenerate with `python -m xtpress.loaders`
+data/raw/*
+data/processed/*
+!data/**/.gitkeep
+
+# Generated figures. Uncomment the negation if you want them tracked
+# so they render in the README on GitHub (recommended for a portfolio repo).
+figures/*
+!figures/.gitkeep
+
+# Fitted models ARE tracked -- they are small and make the repo reproducible.
+!data/models/
+!data/models/*.npy
+!data/models/*.json
+
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
+.DS_Store

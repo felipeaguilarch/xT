@@ -1,0 +1,14 @@
+{
+  "cols": 12,
+  "rows": 8,
+  "n_zones": 96,
+  "n_actions": 128711,
+  "n_matches": 64,
+  "competitions": [
+    "wc_2022"
+  ],
+  "use_xg": true,
+  "model_loss": false,
+  "penalties_excluded": true,
+  "fitted_on": "2026-10-14T00:11:10.819215+00:00"
+}
