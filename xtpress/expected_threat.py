@@ -342,12 +342,7 @@ class ExpectedThreat:
         self.metadata: dict = {}
 
     # -- fitting ----------------------------------------------------------
-    def fit(
-        self,
-        actions: pd.DataFrame,
-        use_xg: bool = True,
-        model_loss: bool = True,
-    ) -> "ExpectedThreat":
+    def fit(self, actions: pd.DataFrame, use_xg: bool = True, model_loss: bool = True,) -> "ExpectedThreat":
         """Estimate s, m, g, c and T from an action frame, then solve.
 
         ``model_loss=True`` (default) scales the continuation term by the
@@ -463,15 +458,35 @@ class ExpectedThreat:
         return self.xt.reshape(self.rows, self.cols)
 
     def rate_actions(self, actions: pd.DataFrame) -> pd.DataFrame:
-        """Add ``xt_start``, ``xt_end`` and ``xt_delta`` columns.
+        """Add ``xt_start``, ``xt_end``, ``xt_delta`` and ''xt_delta_clipped'' columns.
 
-        Successful passes and carries only, per the model. Three decisions the
-        README must state, because each moves the leaderboard:
-          * failed actions excluded (vs. charging them -xt_start)
-          * negative deltas KEPT (net progression, not gross threat)
-          * set pieces flagged, filtered out of the headline table
+        Returns rated rows: succesful passes and carries
+                            failed passes, moves or shots are discarded 
+
+        ``xt_delta`` is net progression: backward moves are negative and kept.
+        ``xt_delta_clipped`` floors it at zero, for gross threat. Set pieces
+        are left in and flagged by ``is_set_piece``
+
+        NEEDS xt
         """
-        raise NotImplementedError
+        if self.xt is None:
+            raise RuntimeError("There are no values to rate against: fit or load a model first.")
+
+        mask = _is_move(actions) & actions.successful.to_numpy()
+        rated = actions[mask].copy()
+
+        grid = dict(cols=self.cols, rows=self.rows)
+        z_start = zone_index(rated.start_x, rated.start_y, **grid)
+        z_end = zone_index(rated.end_x, rated.end_y, **grid)
+        assert (z_start >= 0).all() and (z_end >= 0).all(), "a rated action maps to zone -1: missing coordinates survived the filter"
+
+        rated["xt_start"] = self.xt[z_start]
+        rated["xt_end"] = self.xt[z_end]
+        rated["xt_delta"] = rated.xt_end - rated.xt_start
+        rated["xt_delta_clipped"] = rated.xt_delta.clip(lower=0)
+
+        return rated
+
 
     # -- persistence ------------------------------------------------------
     def save(self, path: Path | None = None) -> Path:
@@ -526,7 +541,6 @@ class ExpectedThreat:
         return model
 
 
-
 def load_reference_grid(refresh: bool = False) -> np.ndarray:
     """Fetch Karun Singh's published 12x8 grid, shape (8, 12).
 
@@ -537,7 +551,8 @@ def load_reference_grid(refresh: bool = False) -> np.ndarray:
     MAE < 0.01; his grid was fitted on different leagues, so the SHAPE agreeing
     is the goal, not the exact values.
 
-    <-- add a line here about the cache and why it matters -->
+    If there is no reference cached locally, or if refresh=True, fetch it from the web and cache it.
+    This allows us to have something to compare against without having to ship the reference grid with the package.
     """
     if REFERENCE_GRID_CACHE.exists() and not refresh:
         data = json.loads(REFERENCE_GRID_CACHE.read_text())
@@ -550,6 +565,6 @@ def load_reference_grid(refresh: bool = False) -> np.ndarray:
     if grid.shape != (8, 12):
         raise ValueError(
             f"Reference grid should be (8, 12) to match ExpectedThreat.grid(), "
-            f"    but got {grid.shape} "
+            f" but got {grid.shape} "
         )
     return grid

@@ -275,6 +275,36 @@ def test_both_solvers_apply_the_completion_factor(full_actions):
     assert headline.c.min() < 1.0
     assert np.all(baseline.c == 1.0)
 
+def test_rate_actions_known_answer():
+    """Three zones, xt = [0.1, 0.2, 0.4]; hand-countable.
+
+    Forward +0.3 and backward -0.3 are kept; a failed pass and a shot are not
+    rated at all. Reversing start and end flips both signs.
+    """
+    from xtpress.expected_threat import ExpectedThreat
+
+    model = ExpectedThreat(cols=3, rows=1)
+    model.xt = np.array([0.1, 0.2, 0.4])
+
+    nan = np.nan
+    frame = pd.DataFrame(
+        [
+            ("pass",  True,  10.0, 100.0),   # forward
+            ("pass",  False, 10.0, 100.0),   # failed -> excluded
+            ("carry", True, 100.0,  10.0),   # backward -> kept
+            ("shot",  True, 100.0,   nan),   # NaN end -> excluded
+        ],
+        columns=["action_type", "successful", "start_x", "end_x"],
+    )
+    frame["start_y"] = 40.0
+    frame["end_y"] = 40.0
+    frame.loc[3, "end_y"] = nan
+
+    rated = model.rate_actions(frame)
+
+    assert list(rated.index) == [0, 2]
+    assert np.allclose(rated.xt_delta, [0.3, -0.3])
+    assert np.allclose(rated.xt_delta_clipped, [0.3, 0.0])
 
 # -- Phase 06 ---------------------------------------------------------------
 
