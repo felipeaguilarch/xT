@@ -282,7 +282,52 @@ def minutes_played(events: pd.DataFrame) -> pd.DataFrame:
     Note this needs the RAW events, not the action frame -- Starting XI and
     Substitution are filtered out by ``to_actions``.
     """
-    raise NotImplementedError
+    # 0. regulation periods only, timestamps as seconds
+    ev = events[events["period"].isin(config.REGULATION_PERIODS)].copy()
+    ev["t"] = _timestamp_seconds(ev["timestamp"])
+
+    # 1. ONE clock for the whole match
+    p_len = ev.groupby(["match_id", "period"])["t"].max().unstack("period")
+    ev["clock"] = ev["t"] + ev["match_id"].map(p_len[1]).where(ev["period"] == 2, 0.0)
+    match_end = p_len[1] + p_len[2]
+
+    # 2. starters: eleven per team, on at time zero
+    xi = ev[ev["type"] == "Starting XI"]
+    starters = pd.DataFrame(
+        [(r.match_id, r.team, p["player"]["id"], p["player"]["name"])
+         for r in xi.itertuples() for p in r.tactics["lineup"]],
+        columns=["match_id", "team", "player_id", "player"])
+    starters["on"] = 0.0
+
+    # 3. substitutions: each event is BOTH an exit and an entrance
+    subs = ev[ev["type"] == "Substitution"]
+    arriving = pd.DataFrame({
+        "match_id": subs["match_id"], "team": subs["team"],
+        "player_id": subs["substitution_replacement_id"].astype(int),
+        "player": subs["substitution_replacement"],
+        "on": subs["clock"]})
+    leaving = pd.DataFrame({
+        "match_id": subs["match_id"],
+        "player_id": subs["player_id"].astype(int),
+        "off": subs["clock"]})
+
+    # 4. a red card is another way to leave
+    card = pd.concat([_column(ev, "foul_committed_card"),
+                      _column(ev, "bad_behaviour_card")], axis=1)
+    sent_off = ev[card.isin(["Red Card", "Second Yellow"]).any(axis=1)]
+    red = pd.DataFrame({
+        "match_id": sent_off["match_id"],
+        "player_id": sent_off["player_id"].astype(int),
+        "off": sent_off["clock"]})
+
+    # 5. assemble
+    offs = pd.concat([leaving, red]).groupby(["match_id", "player_id"],
+                                             as_index=False)["off"].min()
+    out = pd.concat([starters, arriving], ignore_index=True).merge(
+        offs, on=["match_id", "player_id"], how="left")
+    out["off"] = out["off"].fillna(out["match_id"].map(match_end))
+    out["minutes"] = (out["off"] - out["on"]) / 60
+    return out[["match_id", "player_id", "player", "team", "minutes"]]
 
 
 # ---------------------------------------------------------------------------

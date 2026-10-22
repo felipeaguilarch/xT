@@ -306,6 +306,37 @@ def test_rate_actions_known_answer():
     assert np.allclose(rated.xt_delta, [0.3, -0.3])
     assert np.allclose(rated.xt_delta_clipped, [0.3, 0.0])
 
+def test_minutes_played_known_answer():
+    """One match, two 45-minute periods, hand-countable.
+
+    A1 plays 90. A2 is replaced 15 minutes into period 2 -> 60, and A3 plays
+    the remaining 30. B1 is sent off 20 minutes into period 2 -> 65. Events in
+    period 3 (extra time) and period 5 (shootout) must not lengthen the match.
+    """
+    from xtpress import loaders
+
+    def lineup(*players):
+        return {"lineup": [{"player": {"id": i, "name": n}} for i, n in players]}
+
+    rows = [
+        (1, "Starting XI", "00:00:00.000", "A", None, {"tactics": lineup((1, "A1"), (2, "A2"))}),
+        (1, "Starting XI", "00:00:00.000", "B", None, {"tactics": lineup((10, "B1"))}),
+        (1, "Half End", "00:45:00.000", "A", None, {}),
+        (2, "Substitution", "00:15:00.000", "A", 2,
+            {"substitution_replacement": "A3", "substitution_replacement_id": 3.0}),
+        (2, "Foul Committed", "00:20:00.000", "B", 10, {"foul_committed_card": "Red Card"}),
+        (2, "Half End", "00:45:00.000", "A", None, {}),
+        (3, "Pass", "00:10:00.000", "A", 1, {}),
+        (5, "Pass", "00:02:00.000", "A", 1, {}),
+    ]
+    frame = pd.DataFrame(
+        [dict(match_id=1, period=p, type=t, timestamp=ts, team=tm, player_id=pid, **x)
+         for p, t, ts, tm, pid, x in rows]
+    )
+
+    got = loaders.minutes_played(frame).set_index("player").minutes.to_dict()
+    assert got == {"A1": 90.0, "A2": 60.0, "A3": 30.0, "B1": 65.0}, got
+
 # -- Phase 06 ---------------------------------------------------------------
 
 @pytest.mark.skip(reason="implement pressing_sequences.to_possession_frame")

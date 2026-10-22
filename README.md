@@ -27,9 +27,7 @@ Expected Threat and pressing analysis built from scratch on StatsBomb open data.
 **Expected Threat.** <!-- One paragraph. The grid, the Markov chain, what a
 value means. Link to xtpress/expected_threat.py -- do not paste code here. -->
 
-**Press resistance.** <!-- One paragraph. The two axes, and crucially the
-zone adjustment: actual minus expected given where the player received the
-ball. State the weights used in the composite score. -->
+**Press resistance.**
 
 Model decisions worth stating plainly:
 
@@ -40,11 +38,11 @@ Model decisions worth stating plainly:
 
 ## Supporting evidence
 
-| Figure | What it shows |
-| --- | --- |
-| ![](figures/xt_surface.png) | The fitted value surface. |
-| ![](figures/team_pressing.png) | Pressing intensity against pressing payoff. |
-| ![](figures/case_study.png) | One sequence: the press, the turnover, what followed. |
+| Figure                         | What it shows                                         |
+| ------------------------------ | ----------------------------------------------------- |
+| ![](figures/xt_surface.png)    | The fitted value surface.                             |
+| ![](figures/team_pressing.png) | Pressing intensity against pressing payoff.           |
+| ![](figures/case_study.png)    | One sequence: the press, the turnover, what followed. |
 
 <!-- One line of interpretation under each. -->
 
@@ -52,16 +50,31 @@ Model decisions worth stating plainly:
 
 <!-- Fill in with real numbers as you go. -->
 
-| Check | Target | Result |
-| --- | --- | --- |
-| Iterative vs closed-form solve | agree to 1e-9 | — |
-| Correlation with Karun Singh's published 12×8 grid | r > 0.97 | — |
-| Transition matrix rows sum to 1 | within 1e-9 | — |
-| Pass completion rate | 0.78–0.84 | — |
-| PPDA across teams | 6–15 | — |
-| Press-to-regain rate | ~15–20% | — |
-| Retention under pressure, league-wide | 65–80% | — |
-| Team xT vs goals, held out | Spearman ρ 0.45–0.65 | — |
+| Check                                               | Target                 | Result                   |
+| --------------------------------------------------- | ---------------------- | ------------------------ |
+| Iterative vs closed-form solve                      | agree to 1e-9          | 7.0e-12 (173 iterations) |
+| Correlation with Karun Singh's published 12×8 grid | r > 0.97               | 0.996 (MAE 0.0077)       |
+| Same, without the completion factor (baseline)      | r > 0.97               | 0.860 - fails; see below |
+| Transition matrix rows sum to 1                     | within 1e-9            | 2.2e-16                  |
+| Pass completion rate                                | 0.78–0.84             | 0.822                    |
+| PPDA across teams                                   | 6–15                  | —                       |
+| Press-to-regain rate                                | ~15–20%               | —                       |
+| Retention under pressure, league-wide               | 65–80%                | —                       |
+| Team xT vs goals, held out                          | Spearman ρ 0.45–0.65 | —                       |
+
+Measured on 6 different competitions, 12 x 8 grid, fitted and checked on the same competition. The published grid was fitted on other leagues, so this tests agreement of shape, not accuracy. It is also exactly symmetric top to bottom; this grid is not (4% mean asymmetry and no symmetrisation is applied)
+
+The completion factor was found by checking against the published grid, not derived in advance. The textbook recursion, where the rows of the transition matrix sum to 1 and a failed move simply vanishes, gave r=0.860 and a nearly flat surface (goal-end 1.4x the own-end, against 12.6x in the published grid). The factor has no free parameters - it is each zone's observed completion rate - but I chose it after the mismatch. The baseline is kept ( 'fit (... , model_loss=False)' )so the comparison can be rerun.
+
+## Model decisions
+
+- **Loss is modelled in the surface, not in the rating.** A zone's value is scaled by its observed completion rate (about 90% of moves arrive, from 55% to 95% by zone), so a lost ball ends the chain with value 0. The textbook form is kept as a baseline and reported in Validation.
+- Failed actions are not rated at all — they score zero, not negative, so the rating measures gain only.
+- Negative deltas are kept, so the figure is *net* progression. A clipped-at-zero column is provided alongside.
+- Set pieces are flagged and excluded from the headline tables. They are 5.1% of move attempts and still count as moves in the shoot-or-move split, which is a judgement call: a corner is arguably not a decision to move rather than shoot.
+- Penalties are excluded from shots (23 in this sample). Every one is struck from the same spot and would make a false hotspot in `g(z)`.
+- Scoring probability `g(z)` comes from mean StatsBomb xG per zone, not the raw goal rate. 68 of 96 zones have no shots and get 0, which is harmless because shot probability there is also 0.
+- The grid is 12×8 and is not symmetrised.
 
 ## Limitations
 
@@ -69,10 +82,9 @@ Model decisions worth stating plainly:
      project and the thing that separates someone who ran a model from someone
      who understands one. At minimum: -->
 
-- xT credits gains and never penalises losses, so it rewards volume progression.
-- Pressure events are a human annotation against a five-yard convention, not ground truth.
-- The sample is a small number of tournaments; player-level figures carry real uncertainty.
+- The surface models loss but the rating does not. A failed pass lowers the value of the zone it started from, but an individual failed action still scores zero, so xT never charges a player for losing the ball and rewards volume progression. Closing that needs an action-value model such as VAEP.Pressure events are a human annotation against a five-yard convention, not ground truth.
 - Press resistance is confounded by who a player is asked to receive against; the zone adjustment reduces this but does not remove it.
+- Per-zone completion rates rest on as few as 50 attempts in the quietest zones.
 
 ## Reproducing it
 
