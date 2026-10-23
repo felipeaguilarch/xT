@@ -27,9 +27,11 @@ ACTION_COLUMNS = [
     "play_pattern", "body_part",
 ]
 
-# StatsBomb event types that carry the ball.
-_KEEP_TYPES = {"Pass": "pass", 
-               "Carry": "carry", 
+# StatsBomb event types the model uses. Pass, Carry and Shot are the ball's
+# movement; Dribble, Dispossessed and Miscontrol are kept for press
+# resistance, where a lost ball is the outcome being measured.
+_KEEP_TYPES = {"Pass": "pass",
+               "Carry": "carry",
                "Shot": "shot",
                "Dribble": "dribble",
                "Dispossessed": "dispossessed",
@@ -117,7 +119,7 @@ def _xy(value) -> tuple[float, float]:
 
 
 def _timestamp_seconds(timestamp: pd.Series) -> pd.Series:
-    """Convert "MM:SS.mmm" style timestamps to seconds elapsed in the period."""
+    """Convert "HH:MM:SS.mmm" timestamps to seconds elapsed in the period."""
     parts = timestamp.str.split(":", expand=True).astype(float)
     return parts[0] * 3600 + parts[1] * 60 + parts[2]
 
@@ -166,9 +168,15 @@ def unpack_locations(events: pd.DataFrame) -> pd.DataFrame:
 
 
 def to_actions(events: pd.DataFrame, competition: str | None = None) -> pd.DataFrame:
-    """Reduce ~35 StatsBomb event types to the three that carry the ball.
+    """Reduce ~35 StatsBomb event types to the six the model uses.
 
     Returns a frame with exactly ``ACTION_COLUMNS``, one row per action.
+    ``action_type`` is one of pass, carry, shot, dribble, dispossessed or
+    miscontrol (lowercase). Only passes and carries are move attempts.
+
+    ``successful`` is the pass outcome for passes, "Complete" for dribbles,
+    True for carries and shots (they have no outcome of their own), and always
+    False for dispossessed and miscontrol: losing the ball is never a success.
 
     Sanity targets: pass completion 0.78-0.84, 10-30 shots per match across
     both teams.
@@ -269,18 +277,23 @@ def to_actions(events: pd.DataFrame, competition: str | None = None) -> pd.DataF
 def minutes_played(events: pd.DataFrame) -> pd.DataFrame:
     """Return one row per (match_id, player_id) with minutes played.
 
-    NOT IMPLEMENTED -- this is Phase 04 work, and it is the most under-rated
-    task in the project. There is no ready-made column. The recipe:
+    Needs the RAW events, not the action frame -- Starting XI and Substitution are
+    filtered out by ``to_actions``, so an action frame gives an empty result rather
+    than an error.
 
-      1. Starters come from the ``Starting XI`` event's ``tactics`` lineup.
-      2. ``Substitution`` events give the exit minute and the replacement.
-      3. Period length is the timestamp of the LAST event in that period --
-         not 45, because of stoppage time.
-      4. minutes = (exit or period end) - (entry or period start), summed over
-         ``config.REGULATION_PERIODS``.
+    Regulation periods only (``config.REGULATION_PERIODS``). Timestamps restart at
+    zero each period, so everything is placed on ONE match clock, with period 2
+    offset by the length of period 1; after that a player's minutes are simply
+    (off - on) / 60. Period length is the latest timestamp in that period, per
+    match, never 45: stoppage time is routinely 5-14 minutes.
 
-    Note this needs the RAW events, not the action frame -- Starting XI and
-    Substitution are filtered out by ``to_actions``.
+    A player enters at kick-off (Starting XI) or at a Substitution, and leaves at a
+    Substitution or a red card (``Red Card`` / ``Second Yellow``); anyone still on
+    plays to the final whistle. A sent-off player stops at the card and the team
+    plays on with ten, so that team's total falls below 11 x match length by the
+    minutes played a man down.
+
+    Columns: match_id, player_id, player, team, minutes.
     """
     # 0. regulation periods only, timestamps as seconds
     ev = events[events["period"].isin(config.REGULATION_PERIODS)].copy()

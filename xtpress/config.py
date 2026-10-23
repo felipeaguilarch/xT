@@ -28,9 +28,6 @@ for _d in (RAW_DIR, PROCESSED_DIR, MODELS_DIR, FIGURES_DIR):
 PITCH_LENGTH = 120.0
 PITCH_WIDTH = 80.0
 
-# Guard against a coordinate landing exactly on the upper edge (trap #7).
-COORD_EPS = 1e-3
-
 # --------------------------------------------------------------------------
 # xT grid
 # --------------------------------------------------------------------------
@@ -61,13 +58,13 @@ FOCUS_COMPETITION = "wc_2022"
 # Action taxonomy
 # --------------------------------------------------------------------------
 MOVE_TYPES = ("pass", "carry")
-ACTION_TYPES = ("pass", "carry", "shot")
 
-# Events that mean the player lost the ball while pressured.
-LOSS_EVENT_TYPES = ("Dispossessed", "Miscontrol")
+# action_type values (lowercase, as loaders.to_actions emits them) for the
+# events that mean the player lost the ball while pressured.
+LOSS_EVENT_TYPES = ("dispossessed", "miscontrol")
 
 # Counted as defensive actions for PPDA (Trainor's definition).
-PPDA_DEFENSIVE_ACTIONS = ("Duel", "Interception", "Foul Committed")
+PPDA_DEFENSIVE_ACTIONS = ("duel", "interception", "foul committed")
 
 # --------------------------------------------------------------------------
 # PPDA zone

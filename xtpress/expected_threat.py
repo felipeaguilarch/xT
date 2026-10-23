@@ -43,16 +43,24 @@ def zone_index(
     x: pd.Series | np.ndarray,
     y: pd.Series | np.ndarray,
     cols: int = config.GRID_COLS,
-    rows: int = config.GRID_ROWS,) -> np.ndarray:
+    rows: int = config.GRID_ROWS,
+) -> np.ndarray:
     """Map pitch coordinates to a flat zone index in [0, cols*rows).
 
-    Convention, and keep it EVERYWHERE: ``z = row * cols + col``.
+    Convention, and keep it EVERYWHERE: ``z = row * cols + col``. That is the
+    layout ``ndarray.reshape(rows, cols)`` assumes, so ``ExpectedThreat.grid``
+    depends on it; flip it and every heatmap comes out transposed, silently.
 
-    Clip before binning -- a shot on the goal line sits at exactly x=120 and
-    falls outside the last bin otherwise (trap #7). Use ``config.COORD_EPS``.
+    Clip the INDEX, not the coordinate (trap #7). A shot on the goal line sits at
+    exactly x=120, which scales to column ``cols`` -- one past the last bin.
+    Clipping to ``cols - 1`` states the intent and also rescues a coordinate that
+    arrives slightly off-pitch, which shaving an epsilon off the coordinate would
+    not.
 
-    Returns -1 (or NaN-safe equivalent) for rows with missing coordinates so
-    the caller can drop them explicitly rather than silently binning them to 0.
+    Returns -1 for rows with missing or non-finite coordinates, so the caller
+    drops them explicitly rather than silently binning them to zone 0. Callers
+    must filter ``z >= 0`` before using the result: ``np.bincount`` raises on
+    negatives, and as an array index -1 silently reads the last zone.
     """
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -68,7 +76,6 @@ def zone_index(
     return np.where(valid, row * cols + col, -1)
 
 
-
 def zone_centres(cols: int = config.GRID_COLS, rows: int = config.GRID_ROWS) -> np.ndarray:
     """Return an (n_zones, 2) array of zone centre coordinates, for plotting."""
     z = np.arange(cols * rows)
@@ -80,7 +87,6 @@ def zone_centres(cols: int = config.GRID_COLS, rows: int = config.GRID_ROWS) -> 
     centre_y = (row + 0.5) * config.PITCH_WIDTH / rows
 
     return np.column_stack([centre_x, centre_y])
-    
 
 
 def _is_shot(actions: pd.DataFrame) -> np.ndarray:
@@ -148,8 +154,13 @@ def action_probabilities(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(s, m)``, the per-zone shot and move probabilities.
 
-    Must satisfy ``s + m == 1`` everywhere. Decide explicitly what a zone with
-    zero events resolves to rather than letting a 0/0 propagate.
+    Must satisfy ``s + m == 1`` everywhere; ``m`` is derived as ``1 - s`` so the
+    identity holds exactly rather than to floating-point luck.
+
+    A zone with no events resolves to ``s = 0, m = 1``: there is no evidence anyone
+    shoots from there, but value can still pass through. Left as 0/0 it would be
+    NaN, and because every zone feeds every other through ``T @ xt``, one NaN
+    blanks the whole grid within two iterations.
     """
     total = shots + moves
 
@@ -173,8 +184,14 @@ def scoring_probability(
       * ``use_xg=False`` -- raw goals/shots. A corner zone with three shots and
         one goal gives 0.33, which is nonsense.
 
-    Either way, exclude penalties first (trap #5). Handle zones with zero shots
-    consciously -- zero, neighbour mean, or a smoothed estimate (trap #8).
+    Either way penalties are excluded first (trap #5), through ``_is_shot``.
+
+    A zone with no shots resolves to 0 (trap #8). That is harmless rather than
+    merely convenient: ``s`` is also 0 there, because ``shot_and_move_counts`` uses
+    the same ``_is_shot`` mask, and the solve only ever uses the product ``s * g``,
+    so the fallback is multiplied by zero. Measured on WC 2022 at 12x8, 68 of 96
+    zones have no shots. If the two definitions of "a shot" ever drift apart, this
+    stops being true silently.
     """
 
     n_zones = cols * rows
@@ -198,8 +215,15 @@ def transition_matrix(
     """Return the row-stochastic (n_zones, n_zones) matrix T.
 
     SUCCESSFUL moves only -- an intercepted pass does not put the ball in the
-    target zone. Count start->end zone pairs, then normalise each row to sum
-    to 1. A row with no observations needs an explicit fallback.
+    target zone. Count start->end zone pairs, then normalise each row to sum to 1.
+
+    A row with no observed moves falls back to UNIFORM, never to a self-transition:
+    ``T[z, z] = 1`` in a zone where the ball cannot be lost or shot would make that
+    row of ``(I - diag(m c) T)`` all zeros and the solve singular (see
+    ``assert_solvable``). No zone needs the fallback on WC 2022 at 12x8.
+
+    Because every row sums to 1, a failed move is NOT modelled here. That is what
+    ``completion_rates`` and ``fit(model_loss=True)`` add back.
 
     Check: ``np.allclose(T.sum(axis=1), 1.0)``.
     """
@@ -342,7 +366,12 @@ class ExpectedThreat:
         self.metadata: dict = {}
 
     # -- fitting ----------------------------------------------------------
-    def fit(self, actions: pd.DataFrame, use_xg: bool = True, model_loss: bool = True,) -> "ExpectedThreat":
+    def fit(
+        self,
+        actions: pd.DataFrame,
+        use_xg: bool = True,
+        model_loss: bool = True,
+    ) -> "ExpectedThreat":
         """Estimate s, m, g, c and T from an action frame, then solve.
 
         ``model_loss=True`` (default) scales the continuation term by the
@@ -380,7 +409,7 @@ class ExpectedThreat:
             "competitions": sorted(actions.competition.dropna().unique().tolist()),
             "use_xg": use_xg,
             "model_loss": model_loss,
-            "penalties_excluded": True, # always, penalties xT is based on open play only
+            "penalties_excluded": True,  # always: see _is_shot
             "fitted_on": pd.Timestamp.now(tz="UTC").isoformat(),
         }
         return self
@@ -393,24 +422,24 @@ class ExpectedThreat:
         Iteration k has a real meaning: P(score within the next k actions).
         Keep the per-iteration max|delta| -- it is your convergence figure.
 
-        ``tol`` bounds the STEP between successive iterates, NOT the distance
-        to the answer. When you stop, the error still remaining is roughly
-        ``step / (1 - rho)``, where rho is the spectral radius of
-        ``diag(m*c) T``. Measured on the sample match at 8x6, rho = 0.972, so
-        that factor is 36x: stopping at a 1e-10 step leaves a 3.4e-09 error,
-        which overshoots the 1e-9 the agreement test asks for. Choose tol a
-        couple of orders tighter than the accuracy you need.
+        ``tol`` bounds the STEP between successive iterates, NOT the distance to the
+        answer. When you stop, the error still remaining is roughly
+        ``step / (1 - rho)``, where rho is the spectral radius of ``diag(m*c) T``.
+        Measured on WC 2022 at 12x8, rho = 0.880 with loss modelled (the default), so
+        that factor is about 8x; without it rho = 0.964 and the factor is about 28x.
+        Stopping at a 1e-10 step in the second case leaves roughly 3e-09 of error,
+        which overshoots the 1e-9 the agreement test asks for. Choose tol a couple of
+        orders tighter than the accuracy you need.
 
-        Convergence takes ``log(tol) / log(rho)`` iterations -- hundreds, not
-        tens, because rho is near 1. It is near 1 because rho ~ 1 - mean(s)
-        and shots are about 1% of all actions, so value leaks out of the
-        chain slowly. The old default of 100 stopped a sixth of the way. With
-        loss modelled (the default) failed moves leak value too, so rho is
-        smaller and fewer iterations are needed.
+        Convergence takes about ``log(tol) / log(rho)`` iterations: 173 to a 1e-12 step
+        with loss modelled, 617 without. The count is large because rho is near 1,
+        which is because shots are rare (about 1% of all actions) and value leaks out
+        of the chain slowly. Modelling loss lets failed moves leak value too, so rho
+        is smaller.
 
-        Raises if max_iter runs out. A truncated solve returns a plausible
-        vector that is simply wrong, and silently disagrees with the closed
-        form by orders of magnitude.
+        Raises if max_iter runs out. A truncated solve returns a plausible vector that
+        is simply wrong, and silently disagrees with the closed form by orders of
+        magnitude.
         """
         # Local, not self.xt. Starting from the already-solved values would
         # converge in one iteration with delta 0, which makes the agreement
@@ -458,16 +487,19 @@ class ExpectedThreat:
         return self.xt.reshape(self.rows, self.cols)
 
     def rate_actions(self, actions: pd.DataFrame) -> pd.DataFrame:
-        """Add ``xt_start``, ``xt_end``, ``xt_delta`` and ''xt_delta_clipped'' columns.
+        """Add ``xt_start``, ``xt_end``, ``xt_delta`` and ``xt_delta_clipped``.
 
-        Returns rated rows: succesful passes and carries
-                            failed passes, moves or shots are discarded 
+        Returns ONLY the rated rows -- successful passes and carries -- as a new frame
+        with the original index kept, so it can be joined back. Failed moves, shots and
+        losses are absent, not NaN: the model has no term for them, so they are
+        excluded rather than charged ``-xt_start``.
 
         ``xt_delta`` is net progression: backward moves are negative and kept.
-        ``xt_delta_clipped`` floors it at zero, for gross threat. Set pieces
-        are left in and flagged by ``is_set_piece``
+        ``xt_delta_clipped`` floors it at zero, for gross threat. Set pieces are left
+        in and flagged by ``is_set_piece``; excluding them is a decision for the
+        headline table, not this function.
 
-        NEEDS xt
+        Needs only ``xt``, so it works on a loaded model.
         """
         if self.xt is None:
             raise RuntimeError("There are no values to rate against: fit or load a model first.")
@@ -487,7 +519,6 @@ class ExpectedThreat:
 
         return rated
 
-
     # -- persistence ------------------------------------------------------
     def save(self, path: Path | None = None) -> Path:
         """Write ``xt_grid_{cols}x{rows}.npy`` plus a JSON metadata sidecar.
@@ -496,7 +527,7 @@ class ExpectedThreat:
         whether penalties were excluded, and whether g came from xG or the raw
         goal rate. Future you will not remember.
         """
-        if not path:
+        if path is None:
             # The variants must not share a filename, or fitting the baseline
             # after the headline model silently overwrites it.
             variant = "" if self.metadata.get("model_loss", True) else "_baseline"
@@ -513,18 +544,21 @@ class ExpectedThreat:
     def load(cls, path: Path) -> "ExpectedThreat":
         """Load a saved grid and its metadata.
 
-        Returns a PARTIAL model: ``xt`` (flat, n_zones), ``metadata``, and the
-        grid dimensions read from the sidecar. ``grid()`` works.
+        Returns a PARTIAL model: ``xt`` (flat, n_zones), ``metadata``, and the grid
+        dimensions read from the sidecar. ``grid()`` and ``rate_actions`` work.
 
-        ``s``, ``m``, ``g`` and ``T`` are None. They are estimated from an
-        actions frame, and that frame is not saved 
+        ``s``, ``m``, ``g``, ``c`` and ``T`` are None. They are estimated from an
+        actions frame, and that frame is not saved, so they cannot be reconstructed
+        from the file alone. The file keeps the fitted surface, not the working that
+        produced it.
 
-        ``load`` is for reading a surface, not resuming a fit.
+        Both solvers therefore raise on a loaded model. ``load`` is for reading a
+        surface, not resuming a fit.
 
-        Raises ValueError when the array and the sidecar disagree about the
-        grid size
+        Raises ValueError when the array and the sidecar disagree about the grid size,
+        which means the two files are a mismatched pair.
         """
-    
+
         sidecar = path.with_suffix(".json")
         metadata = json.loads(sidecar.read_text())
 
@@ -534,8 +568,9 @@ class ExpectedThreat:
 
         if model.xt.size != model.n_zones:
             raise ValueError(
-                f"Model size and number of zones in {path.name} do not match {sidecar.name} "
-                f"describes a {model.cols}x{model.rows} grid ({model.n_zones} zones) -- mismatched pair?"
+                f"mismatched model files: {path.name} holds {model.xt.size} values "
+                f"but {sidecar.name} describes a {model.cols}x{model.rows} grid "
+                f"({model.n_zones} zones)"
             )
 
         return model
@@ -546,13 +581,17 @@ def load_reference_grid(refresh: bool = False) -> np.ndarray:
 
     Source: https://karun.in/blog/data/open_xt_12x8_v1.json
 
-    Your single highest-value validation. Plot both before comparing and flip
-    yours if row 0 sits at the wrong touchline. Expect Pearson r > 0.97 and
-    MAE < 0.01; his grid was fitted on different leagues, so the SHAPE agreeing
-    is the goal, not the exact values.
+    Your single highest-value validation. Expect Pearson r > 0.97 and MAE < 0.01;
+    his grid was fitted on different leagues, so the SHAPE agreeing is the goal,
+    not the exact values.
 
-    If there is no reference cached locally, or if refresh=True, fetch it from the web and cache it.
-    This allows us to have something to compare against without having to ship the reference grid with the package.
+    The published grid is exactly mirror-symmetric top to bottom (the flipped grid
+    is identical), so the y-orientation cannot change r and no flip is needed. A
+    grid fitted from raw events will not be symmetric: 4.0% mean asymmetry on
+    WC 2022 at 12x8.
+
+    Cached in ``config.MODELS_DIR``, which git tracks, so a fresh clone has it and
+    the test suite stays offline. ``refresh=True`` downloads it again.
     """
     if REFERENCE_GRID_CACHE.exists() and not refresh:
         data = json.loads(REFERENCE_GRID_CACHE.read_text())
@@ -564,7 +603,7 @@ def load_reference_grid(refresh: bool = False) -> np.ndarray:
     grid = np.array(data, dtype=float)
     if grid.shape != (8, 12):
         raise ValueError(
-            f"Reference grid should be (8, 12) to match ExpectedThreat.grid(), "
-            f" but got {grid.shape} "
+            f"reference grid should be (8, 12) to match ExpectedThreat.grid(), "
+            f"but got {grid.shape} -- the source format may have changed"
         )
     return grid

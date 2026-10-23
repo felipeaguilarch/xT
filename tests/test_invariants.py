@@ -1,11 +1,15 @@
 """The acceptance checks from the plan, as executable tests.
 
-These are written to FAIL right now -- every module raises NotImplementedError.
-That is the point: they are the definition of done for each phase. Delete the
-skip marks as you implement, and let the suite tell you when a phase is
-finished rather than eyeballing a notebook.
+They are the definition of done for each phase. Tests for implemented code
+run and pass; tests for the phases still to come are skipped, and each skip
+reason names the function to implement. The loop: implement, delete the skip
+mark, run the suite, and let it tell you when the phase is finished rather than
+eyeballing a notebook.
 
-    pytest -q
+    python -m pytest -q
+
+Run it with pytest. ``python tests/test_invariants.py`` defines the tests and
+calls none of them, so it prints nothing.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 import pytest
+import json
 
 from xtpress import config
 
@@ -275,6 +280,36 @@ def test_both_solvers_apply_the_completion_factor(full_actions):
     assert headline.c.min() < 1.0
     assert np.all(baseline.c == 1.0)
 
+def test_save_load_round_trip(model, tmp_path):
+    from xtpress.expected_threat import ExpectedThreat
+
+    path = model.save(tmp_path / "model.npy")
+    loaded = ExpectedThreat.load(path)
+
+    assert np.array_equal(loaded.xt, model.xt)
+    assert np.array_equal(loaded.grid(), model.grid())
+    assert loaded.metadata == model.metadata
+    assert loaded.c is None
+
+
+def test_load_rejects_a_mismatched_pair(model, tmp_path):
+    from xtpress.expected_threat import ExpectedThreat
+
+    np.save(tmp_path / "bad.npy", np.zeros((6, 8)))
+    (tmp_path / "bad.json").write_text(json.dumps(model.metadata))
+    with pytest.raises(ValueError, match="mismatched"):
+        ExpectedThreat.load(tmp_path / "bad.npy")
+
+
+def test_variants_save_to_different_default_files(full_actions, tmp_path, monkeypatch):
+    from xtpress.expected_threat import ExpectedThreat
+
+    monkeypatch.setattr(config, "MODELS_DIR", tmp_path)
+    headline = ExpectedThreat().fit(full_actions).save()
+    baseline = ExpectedThreat().fit(full_actions, model_loss=False).save()
+    assert headline.name == "xt_grid_12x8.npy"
+    assert baseline.name == "xt_grid_12x8_baseline.npy"
+
 def test_rate_actions_known_answer():
     """Three zones, xt = [0.1, 0.2, 0.4]; hand-countable.
 
@@ -336,6 +371,7 @@ def test_minutes_played_known_answer():
 
     got = loaders.minutes_played(frame).set_index("player").minutes.to_dict()
     assert got == {"A1": 90.0, "A2": 60.0, "A3": 30.0, "B1": 65.0}, got
+
 
 # -- Phase 06 ---------------------------------------------------------------
 
