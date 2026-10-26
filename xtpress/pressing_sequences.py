@@ -37,7 +37,9 @@ def to_possession_frame(
     it when asking how high the press was relative to the goal the pressing
     team attacks -- the raw x already answers that.
     """
-    raise NotImplementedError
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    return config.PITCH_LENGTH - x, config.PITCH_WIDTH - y
 
 
 def extract_pressures(events: pd.DataFrame) -> pd.DataFrame:

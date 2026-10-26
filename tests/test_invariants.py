@@ -375,7 +375,14 @@ def test_minutes_played_known_answer():
 
 # -- Phase 06 ---------------------------------------------------------------
 
-@pytest.mark.skip(reason="implement pressing_sequences.to_possession_frame")
+def test_to_possession_frame_known_answer():
+    """The corner maps to the opposite corner; the centre spot to itself."""
+    from xtpress.pressing_sequences import to_possession_frame
+
+    x, y = to_possession_frame(np.array([0.0, 60.0]), np.array([0.0, 40.0]))
+    assert np.allclose(x, [120.0, 60.0])
+    assert np.allclose(y, [80.0, 40.0])
+
 def test_frame_mirror_is_an_involution():
     """Trap #2: applying the mirror twice must return the original point."""
     from xtpress.pressing_sequences import to_possession_frame
