@@ -98,3 +98,5 @@ MIN_PRESSURED_ACTIONS = 50   # minimum sample for a press-resistance rating
 # Periods 1 and 2 only for minutes played; period 5 is the shootout (trap #6).
 REGULATION_PERIODS = (1, 2)
 EXCLUDED_PERIODS = (5,)
+
+

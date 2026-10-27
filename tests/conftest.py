@@ -77,3 +77,16 @@ def model(full_actions):
 
     cols, rows = MODEL_GRID
     return ExpectedThreat(cols=cols, rows=rows).fit(full_actions)
+
+@pytest.fixture(scope="session")
+def pressures(events):
+    from xtpress.pressing_sequences import extract_pressures
+
+    return extract_pressures(events)
+
+
+@pytest.fixture(scope="session")
+def sequences(pressures):
+    from xtpress.pressing_sequences import build_press_sequences
+
+    return build_press_sequences(pressures)

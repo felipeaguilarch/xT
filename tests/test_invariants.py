@@ -390,6 +390,127 @@ def test_frame_mirror_is_an_involution():
     x, y = np.array([47.1]), np.array([46.8])
     assert np.allclose(to_possession_frame(*to_possession_frame(x, y)), (x, y))
 
+def test_extract_pressures_on_the_sample_match(events):
+    """Canada v Morocco: 289 Pressure events, 58 of them counterpresses."""
+    from xtpress.pressing_sequences import extract_pressures
+
+    p = extract_pressures(events)
+
+    assert list(p.columns) == [
+        "id", "match_id", "period", "time_seconds", "team", "team_id", "player",
+        "player_id", "x", "y", "duration", "counterpress", "possession",
+        "possession_team", "related_events",
+    ]
+    assert len(p) == (events["type"] == "Pressure").sum() == 289
+    assert p["id"].is_unique and p["id"].notna().all()
+    assert p["counterpress"].dtype == bool and p["counterpress"].sum() == 58
+    assert p[["x", "y"]].notna().all().all()
+    assert p["x"].between(0, 120).all() and p["y"].between(0, 80).all()
+    assert abs(p["duration"].median() - 0.47) < 0.01
+
+def test_link_pressures_known_answer():
+    """Three pressures against four events, each built to trip one mistake.
+
+    p1 links through related_events to e1. p2 has no related events, so it
+    falls back to the window and must pick e2, the OPPONENT event 0.5 s BEFORE
+    it:
+      * a forward-only window misses e2 (trap #15)
+      * e3 is at the same clock time but in period 2, so a join without
+        ``period`` picks it instead
+      * e4, 0.2 s after, belongs to the pressing team's own side
+    p3 has nothing within the window and must stay in the output, unlinked.
+    """
+    from xtpress.pressing_sequences import link_pressures_to_actions
+
+    events = pd.DataFrame(
+        [
+            ("e1", 1, "00:10:00.000", 2, 22, "Carry", True, [30.0, 40.0]),
+            ("e2", 1, "00:19:59.500", 2, 23, "Pass", True, [50.0, 40.0]),
+            ("e3", 2, "00:20:00.000", 2, 24, "Pass", True, [10.0, 10.0]),
+            ("e4", 1, "00:20:00.200", 1, 11, "Carry", True, [99.0, 5.0]),
+        ],
+        columns=["id", "period", "timestamp", "team_id", "player_id", "type",
+                 "under_pressure", "location"],
+    )
+    events.insert(1, "match_id", 1)
+    pressures = pd.DataFrame(
+        [
+            ("p1", 1, 600.3, 1, 90.0, 40.0, ["e1"]),
+            ("p2", 1, 1200.0, 1, 70.0, 40.0, None),
+            ("p3", 1, 3000.0, 1, 60.0, 40.0, None),
+        ],
+        columns=["id", "period", "time_seconds", "team_id", "x", "y", "related_events"],
+    )
+    pressures.insert(1, "match_id", 1)
+
+    out = link_pressures_to_actions(pressures, events)
+
+    assert len(out) == 3
+    assert list(out["link_method"].fillna("none")) == ["related", "window", "none"]
+    assert list(out["action_id"].fillna("-")) == ["e1", "e2", "-"]
+    assert list(out["action_player_id"].fillna(-1)) == [22, 23, -1]
+    assert np.allclose(out["link_distance"].fillna(-1), [0.0, 0.0, -1.0])
+
+
+def test_link_pressures_on_the_sample_match(events):
+    from xtpress.pressing_sequences import extract_pressures, link_pressures_to_actions
+
+    pressures = extract_pressures(events)
+    linked = link_pressures_to_actions(pressures, events)
+
+    assert len(linked) == len(pressures) and linked["id"].is_unique
+    assert linked["link_method"].value_counts().to_dict() == {"related": 254, "window": 18}
+    assert linked["link_method"].isna().sum() == 17
+    related = linked[linked["link_method"] == "related"]
+    assert related["link_distance"].median() < 6      # about 73 if the mirror is forgotten
+
+def test_build_press_sequences_known_answer():
+    """Team A has five pressures that must split into four sequences; team B
+    has two that form one. Rows are deliberately shuffled.
+
+    a1-a3  one sequence (gaps 2 s, possession 5)
+    b1     25 s later: the GAP breaks it (11 s > 5 s)
+    c1     1 s after b1 but possession 6: the POSSESSION breaks it
+    d1     period 2 at t=13: sorted by time alone it would land between a2
+           and a3, and without a period break it would join c1
+    e1-e2  the other team, so a separate sequence
+    """
+    from xtpress.pressing_sequences import build_press_sequences
+
+    rows = [
+        ("e2", 1, 11.0, 7, 30.0, False, 2), ("a3", 1, 14.0, 5, 90.0, False, 1),
+        ("c1", 1, 26.0, 6, 50.0, False, 1), ("a1", 1, 10.0, 5, 70.0, False, 1),
+        ("d1", 2, 13.0, 6, 40.0, False, 1), ("b1", 1, 25.0, 5, 60.0, False, 1),
+        ("a2", 1, 12.0, 5, 80.0, True, 1),  ("e1", 1, 10.0, 7, 20.0, False, 2),
+    ]
+    pressures = pd.DataFrame(rows, columns=["id", "period", "time_seconds", "possession",
+                                            "x", "counterpress", "team_id"])
+    pressures["match_id"] = 1
+    pressures["team"] = pressures["team_id"].map({1: "A", 2: "B"})
+    pressures["possession_team"] = pressures["team_id"].map({1: "B", 2: "A"})
+
+    s = build_press_sequences(pressures)
+
+    assert list(s["n_pressures"]) == [3, 1, 1, 1, 2]
+    assert np.allclose(s["mean_x"], [80, 60, 50, 40, 25])        # raw x, not mirrored
+    assert list(s["any_counterpress"]) == [True, False, False, False, False]
+    assert list(s["possession"]) == [5, 5, 6, 6, 7]
+    assert list(s["period"]) == [1, 1, 1, 2, 1]
+    assert np.allclose(s["start_time"], [10, 25, 26, 13, 10])
+    assert np.allclose(s["end_time"], [14, 25, 26, 13, 11])
+
+
+def test_build_press_sequences_on_the_sample_match(pressures, sequences):
+    assert list(sequences.columns) == [
+        "sequence_id", "match_id", "period", "team", "team_id", "start_time",
+        "end_time", "n_pressures", "mean_x", "any_counterpress", "possession",
+        "possession_team",
+    ]
+    assert sequences["sequence_id"].is_unique
+    assert sequences["n_pressures"].sum() == len(pressures) == 289
+    assert sequences.groupby("team").size().to_dict() == {"Canada": 101, "Morocco": 107}
+    assert (sequences["n_pressures"] == 1).sum() == 144
+    assert sequences["any_counterpress"].sum() == 46
 
 @pytest.mark.skip(reason="implement pressing_sequences.ppda")
 def test_ppda_lands_in_the_published_band(ppda_table):
@@ -397,9 +518,73 @@ def test_ppda_lands_in_the_published_band(ppda_table):
     assert ppda_table.ppda.between(6, 15).mean() > 0.9
 
 
-@pytest.mark.skip(reason="implement pressing_sequences.build_press_sequences")
-def test_sequences_never_span_a_possession_change(sequences):
-    assert sequences.possession.notna().all()
+def test_label_sequence_outcomes_known_answer():
+    """Team A (id 1) presses in six hand-built sequences, team B in one; only S1 and S4 win.
+
+    S1  possession 1 (B) -> possession 2 is A's, 2 s later at x=40:  WON, not high
+    S2  possession 3 (B) -> possession 4 is A's, but 15 s later:      too slow
+    S3  possession 4 is A's OWN, and possession 5 is A's too:         the guard
+    S4  possession 6 (B) -> possession 7 is A's, 3 s later at x=75:   WON, high
+    S5  possession 8 (B) -> the next possession is in period 2:       not won
+    S6  possession 10, the last of the match:                         no next
+    S7  team B presses possession 4 (A's) and A keeps the ball in 5:  not won
+
+    Each possession gets a decoy second event at x=5, and the rows are
+    reversed, so the answer depends on picking the FIRST event by ``index``.
+    """
+    from xtpress.pressing_sequences import label_sequence_outcomes
+
+    def stamp(t):
+        return f"{int(t // 3600):02d}:{int(t % 3600 // 60):02d}:{t % 60:06.3f}"
+
+    # (possession, owner id, period, first-event time, first-event x)
+    possessions = [
+        (1, 2, 1, 0.0, 60.0), (2, 1, 1, 12.0, 40.0), (3, 2, 1, 20.0, 50.0),
+        (4, 1, 1, 60.0, 70.0), (5, 1, 1, 72.0, 80.0), (6, 2, 1, 76.0, 30.0),
+        (7, 1, 1, 83.0, 75.0), (8, 2, 1, 90.0, 55.0), (9, 1, 2, 1.0, 65.0),
+        (10, 2, 2, 50.0, 45.0),
+    ]
+    rows = []
+    for k, (poss, owner, period, t, x) in enumerate(possessions):
+        rows.append((2 * k, poss, owner, period, stamp(t), [x, 40.0]))
+        rows.append((2 * k + 1, poss, owner, period, stamp(t + 1.0), [5.0, 5.0]))
+    events = pd.DataFrame(rows[::-1], columns=["index", "possession", "possession_team_id",
+                                               "period", "timestamp", "location"])
+    events["match_id"] = 1
+
+    names = {1: "A", 2: "B"}
+    #        team_id, possession, period, end_time
+    seqs = [(1, 1, 1, 10.0), (1, 3, 1, 45.0), (1, 4, 1, 70.0), (1, 6, 1, 80.0),
+            (1, 8, 1, 2700.0), (1, 10, 2, 60.0), (2, 4, 1, 62.0)]
+    sequences = pd.DataFrame(seqs, columns=["team_id", "possession", "period", "end_time"])
+    sequences["match_id"] = 1
+    sequences["team"] = sequences["team_id"].map(names)
+    owner_of = {p[0]: p[1] for p in possessions}
+    sequences["possession_team"] = sequences["possession"].map(owner_of).map(names)
+
+    out = label_sequence_outcomes(sequences, events, window=8.0, high_regain_min_x=60.0)
+
+    assert list(out["won_possession"]) == [True, False, False, True, False, False, False]
+    assert list(out["won_high"]) == [False, False, False, True, False, False, False]
+    assert out.loc[[0, 3], "seconds_to_regain"].tolist() == [2.0, 3.0]
+    assert out.loc[[0, 3], "regain_x"].tolist() == [40.0, 75.0]       # first event, not the decoy
+    assert out.loc[[0, 3], "won_possession_id"].tolist() == [2, 7]
+    lost = out[~out["won_possession"]]
+    assert lost[["seconds_to_regain", "regain_x", "regain_y", "won_possession_id"]].isna().all().all()
+
+
+def test_sequences_never_span_a_possession_change(pressures, sequences):
+    # 1. Nothing lost, nothing counted twice.
+    assert sequences.n_pressures.sum() == len(pressures)
+
+    # 2. Put every pressure back into a sequence with the SAME possession id.
+    key = ["match_id", "team_id", "period", "possession"]
+    m = pressures.merge(sequences, on=key, suffixes=("", "_seq"))
+    inside = m[(m["time_seconds"] >= m["start_time"]) & (m["time_seconds"] <= m["end_time"])]
+
+    # every pressure lands in exactly one sequence, and none are left over
+    assert inside.groupby("id").size().max() == 1
+    assert inside["id"].nunique() == len(pressures)
 
 
 # -- Phase 07 ---------------------------------------------------------------
