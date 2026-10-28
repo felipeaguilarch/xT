@@ -76,6 +76,22 @@ PPDA_OPPONENT_PASS_MAX_X = 72.0   # opponent passes, in the opponent's frame
 PPDA_DEFENSIVE_ACTION_MIN_X = 48.0  # your defensive actions, in your frame
 
 # --------------------------------------------------------------------------
+# Pressures per opponent-half touch
+# --------------------------------------------------------------------------
+# Your pressures in the opponent's half (x >= HALFWAY_X, your frame) set against
+# the opponent's touches in their own half (x <= HALFWAY_X, their frame). The
+# same strip of grass again, but 120 - 60 = 60, so for the halfway line the two
+# thresholds happen to be one number.
+HALFWAY_X = PITCH_LENGTH / 2
+
+# What counts as a touch (lowercased, like PPDA_DEFENSIVE_ACTIONS). Receipts are
+# in so that a side that plays long over the press is still seen on the ball.
+TOUCH_EVENT_TYPES = (
+    "pass", "ball receipt*", "carry", "dribble", "shot",
+    "miscontrol", "dispossessed", "clearance",
+)
+
+# --------------------------------------------------------------------------
 # Pressing thresholds
 # --------------------------------------------------------------------------
 PRESS_SEQUENCE_GAP_SECONDS = 5.0  # gap that starts a new pressing sequence

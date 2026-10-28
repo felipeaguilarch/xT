@@ -90,3 +90,32 @@ def sequences(pressures):
     from xtpress.pressing_sequences import build_press_sequences
 
     return build_press_sequences(pressures)
+
+
+@pytest.fixture(scope="session")
+def all_events(full_actions):
+    """Raw events of every match ``full_actions`` covers, from the parquet cache."""
+    import pandas as pd
+    from xtpress import loaders
+
+    ids = sorted(full_actions["match_id"].unique())
+    return pd.concat([loaders.load_events(m) for m in ids], ignore_index=True)
+
+
+@pytest.fixture(scope="session")
+def ppda_table(all_events):
+    """PPDA for every team in every match of the focus competition (128 rows for WC 2022)."""
+    from xtpress.pressing_sequences import ppda
+
+    return ppda(all_events)
+
+
+@pytest.fixture(scope="session")
+def team_summary(all_events, full_actions, model):
+    """The whole pressing pipeline, one row per team (32 for WC 2022)."""
+    from xtpress import pressing_sequences as ps
+
+    sequences = ps.build_press_sequences(ps.extract_pressures(all_events))
+    sequences = ps.label_sequence_outcomes(sequences, all_events)
+    sequences = ps.sequence_value(sequences, model.rate_actions(full_actions), full_actions)
+    return ps.team_pressing_summary(sequences, all_events)

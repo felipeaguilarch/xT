@@ -512,10 +512,66 @@ def test_build_press_sequences_on_the_sample_match(pressures, sequences):
     assert (sequences["n_pressures"] == 1).sum() == 144
     assert sequences["any_counterpress"].sum() == 46
 
-@pytest.mark.skip(reason="implement pressing_sequences.ppda")
 def test_ppda_lands_in_the_published_band(ppda_table):
-    """Measured 7.4-12.3 on three sample matches. Outside 6-15, check the zone."""
-    assert ppda_table.ppda.between(6, 15).mean() > 0.9
+    """Measured on all 64 WC 2022 matches: median 11.7, range 4.2-26.3, 77% in 6-15.
+
+    The band was first measured on three matches (7.4-12.3), where it looked
+    tight. Over 64 it is not: deep-defending sides (Japan 26.3, Morocco 25.2,
+    Costa Rica 23.6) sit far above 15 legitimately. So this checks the centre
+    of the distribution, not that nearly every team is inside 6-15. A wrong
+    frame or a lowercase mismatch moves the median to 22, 7 or NaN.
+    """
+    assert len(ppda_table) == 128
+    assert ppda_table.ppda.notna().all()
+    assert 10 <= ppda_table.ppda.median() <= 13
+    assert ppda_table.ppda.between(6, 15).mean() > 0.7
+
+
+def test_ppda_on_the_sample_match(events):
+    from xtpress.pressing_sequences import ppda
+
+    t = ppda(events).set_index("team")
+    assert t.loc["Morocco", ["opp_passes", "def_actions"]].tolist() == [407, 33]
+    assert t.loc["Canada", ["opp_passes", "def_actions"]].tolist() == [327, 28]
+    assert round(t.loc["Morocco", "ppda"], 2) == 12.33
+    assert round(t.loc["Canada", "ppda"], 2) == 11.68
+
+
+def test_ppda_known_answer():
+    """Two matches, hand-counted. Thresholds are 72 (opponent passes) and 48 (your actions).
+
+    Match 1  A (id 1) passes at x = 10, 20, 72, 80:   3 in the zone (72 counts)
+             B (id 2) passes at x = 30, 72, 73, 100:  2 in the zone (73 does not)
+             A defends: Duel 48 (counts), Interception 60, Foul Committed 47.9
+                        (does NOT), Duel 100 (counts)       -> 3
+             B defends: Interception 50                      -> 1
+             A.ppda = B's 2 passes / A's 3 actions;  B.ppda = A's 3 / B's 1
+    Match 2  D (id 4) has events but no defensive action in the zone, so its
+             PPDA is NaN, not infinity, and the row must still exist.
+    """
+    from xtpress.pressing_sequences import ppda
+
+    def ev(match, team_id, team, kind, x):
+        return (match, team_id, team, kind, None if x is None else [x, 40.0])
+
+    rows = [ev(1, 1, "A", "Starting XI", None), ev(1, 2, "B", "Starting XI", None)]
+    rows += [ev(1, 1, "A", "Pass", x) for x in (10.0, 20.0, 72.0, 80.0)]
+    rows += [ev(1, 2, "B", "Pass", x) for x in (30.0, 72.0, 73.0, 100.0)]
+    rows += [ev(1, 1, "A", "Duel", 48.0), ev(1, 1, "A", "Interception", 60.0),
+             ev(1, 1, "A", "Foul Committed", 47.9), ev(1, 1, "A", "Duel", 100.0),
+             ev(1, 1, "A", "Pressure", 90.0), ev(1, 2, "B", "Interception", 50.0)]
+    rows += [ev(2, 3, "C", "Pass", 5.0)] * 6 + [ev(2, 4, "D", "Pass", 5.0)] * 3
+    rows += [ev(2, 3, "C", "Duel", 60.0)] * 2 + [ev(2, 4, "D", "Duel", 10.0)]
+    events = pd.DataFrame(rows[::-1], columns=["match_id", "team_id", "team", "type", "location"])
+
+    t = ppda(events)
+
+    assert list(t["team"]) == ["A", "B", "C", "D"]
+    assert list(t["opp_passes"]) == [2, 3, 3, 6]
+    assert list(t["def_actions"]) == [3, 1, 2, 0]
+    assert np.allclose(t["ppda"], [2 / 3, 3.0, 1.5, np.nan], equal_nan=True)
+    assert not np.isinf(t["ppda"]).any()
+    assert "x" not in events.columns                                        # input left alone
 
 
 def test_label_sequence_outcomes_known_answer():
@@ -571,6 +627,186 @@ def test_label_sequence_outcomes_known_answer():
     assert out.loc[[0, 3], "won_possession_id"].tolist() == [2, 7]
     lost = out[~out["won_possession"]]
     assert lost[["seconds_to_regain", "regain_x", "regain_y", "won_possession_id"]].isna().all().all()
+
+
+def test_sequence_value_known_answer():
+    """Five hand-built sequences; each one earns its answer for a different reason.
+
+    S1  match 1, won possession 2 (team 1): moves +0.010 then -0.004, two shots
+        (xG 0.10 + 0.05)           -> xt_gained 0.006, start 0.02, shot_xg 0.15
+        The same possession also holds an OTHER-team move (+0.5) and shot (0.9):
+        they must not count.
+    S2  won possession 7, nothing happened                -> 0, 0, False; start NaN
+    S3  NOT won (possession id NaN)                       -> everything NaN, False
+    S4  match 1, won possession 4 (team 2): one move +0.02, no shot -> 0.02, 0.0
+    S5  match 2, won possession 2 (team 1): one move +0.1 -> 0.1; the same possession
+        number as S1 in another match must not mix with it
+
+    The rated rows are reversed, so ``start_zone_xt`` is only right if the moves
+    are put in event order (``index``) before taking the first.
+    """
+    from xtpress.pressing_sequences import sequence_value
+
+    # (match_id, index, possession, team_id, xt_start, xt_delta) -- later index first
+    moves = [
+        (1, 30, 2, 2, 0.30, 0.500),
+        (1, 9, 2, 1, 0.05, -0.004),
+        (1, 5, 2, 1, 0.02, 0.010),
+        (1, 12, 4, 2, 0.01, 0.020),
+        (2, 8, 2, 1, 0.03, 0.100),
+    ]
+    rated = pd.DataFrame(moves, columns=["match_id", "index", "possession", "team_id", "xt_start", "xt_delta"])
+
+    # (match_id, possession, team_id, action_type, xg); passes carry no xG
+    acts = [
+        (1, 2, 1, "shot", 0.05), (1, 2, 1, "shot", 0.10), (1, 2, 2, "shot", 0.90),
+        (1, 2, 1, "pass", np.nan), (1, 4, 2, "pass", np.nan), (2, 2, 1, "pass", np.nan),
+    ]
+    actions = pd.DataFrame(acts, columns=["match_id", "possession", "team_id", "action_type", "xg"])
+
+    # (match_id, team_id, won_possession, won_possession_id)
+    seqs = [(1, 1, True, 2.0), (1, 1, True, 7.0), (1, 1, False, np.nan), (1, 2, True, 4.0), (2, 1, True, 2.0)]
+    sequences = pd.DataFrame(seqs, columns=["match_id", "team_id", "won_possession", "won_possession_id"])
+
+    out = sequence_value(sequences, rated, actions)
+
+    assert len(out) == 5 and list(out["match_id"]) == [1, 1, 1, 1, 2]       # nothing dropped, order kept
+    assert np.allclose(out["xt_gained"], [0.006, 0.0, np.nan, 0.02, 0.1], equal_nan=True)
+    assert np.allclose(out["start_zone_xt"], [0.02, np.nan, np.nan, 0.01, 0.03], equal_nan=True)
+    assert np.allclose(out["shot_xg"], [0.15, 0.0, np.nan, 0.0, 0.0], equal_nan=True)
+    assert list(out["reached_shot"]) == [True, False, False, False, False]
+    assert out["reached_shot"].dtype == bool
+
+
+def test_pressures_per_opp_half_touch_on_the_sample_match(events):
+    from xtpress.pressing_sequences import pressures_per_opponent_half_touch
+
+    t = pressures_per_opponent_half_touch(events).set_index("team")
+    assert t.loc["Morocco", ["pressures", "opp_touches"]].tolist() == [52, 837]
+    assert t.loc["Canada", ["pressures", "opp_touches"]].tolist() == [91, 821]
+    assert round(t.loc["Morocco", "pressures_per_opp_half_touch"], 3) == 0.062
+    assert round(t.loc["Canada", "pressures_per_opp_half_touch"], 3) == 0.111
+
+
+def test_pressures_per_opp_half_touch_known_answer():
+    """Hand-counted. The halfway line is x = 60 and counts on both sides.
+
+    Match 1  A presses at x = 70, 61, 60, 100 (4 in the opponent's half; 59.9 is not)
+             B presses at x = 80, 20                   (1)
+             A's touches in A's half: Pass 10, Carry 30, Ball Receipt* 60,
+                Shot 5                                 -> 4
+                (Pass 60.1, a Duel and a Pressure do NOT count)
+             B's touches in B's half: Pass 40, Ball Receipt* 50, Clearance 10
+                                                       -> 3   (Dribble 70 does not)
+             A.ratio = 4 pressures / B's 3 touches;  B.ratio = 1 / A's 4
+    Match 2  D has no touch in its own half, so C's ratio is NaN, not infinity.
+             D presses nothing, so D keeps its row with 0 pressures and ratio 0.
+    """
+    from xtpress.pressing_sequences import pressures_per_opponent_half_touch
+
+    def ev(match, team_id, team, kind, x):
+        return (match, team_id, team, kind, None if x is None else [x, 40.0])
+
+    rows = [ev(1, 1, "A", "Starting XI", None)]
+    rows += [ev(1, 1, "A", "Pressure", x) for x in (70.0, 61.0, 60.0, 59.9, 100.0)]
+    rows += [ev(1, 2, "B", "Pressure", x) for x in (80.0, 20.0)]
+    rows += [ev(1, 1, "A", "Pass", 10.0), ev(1, 1, "A", "Carry", 30.0), ev(1, 1, "A", "Ball Receipt*", 60.0),
+             ev(1, 1, "A", "Shot", 5.0), ev(1, 1, "A", "Pass", 60.1), ev(1, 1, "A", "Duel", 20.0)]
+    rows += [ev(1, 2, "B", "Pass", 40.0), ev(1, 2, "B", "Ball Receipt*", 50.0),
+             ev(1, 2, "B", "Clearance", 10.0), ev(1, 2, "B", "Dribble", 70.0)]
+    rows += [ev(2, 3, "C", "Pressure", 90.0)] * 3 + [ev(2, 3, "C", "Pass", 20.0)] * 2
+    rows += [ev(2, 4, "D", "Pass", 90.0), ev(2, 4, "D", "Carry", 100.0)]
+    events = pd.DataFrame(rows[::-1], columns=["match_id", "team_id", "team", "type", "location"])
+
+    t = pressures_per_opponent_half_touch(events)
+
+    assert list(t["team"]) == ["A", "B", "C", "D"]
+    assert list(t["pressures"]) == [4, 1, 3, 0]
+    assert list(t["opp_touches"]) == [3, 4, 0, 2]
+    assert np.allclose(t["pressures_per_opp_half_touch"], [4 / 3, 0.25, np.nan, 0.0], equal_nan=True)
+    assert not np.isinf(t["pressures_per_opp_half_touch"]).any()
+    assert "x" not in events.columns                                        # input left alone
+
+
+def test_team_pressing_summary_known_answer():
+    """Three teams over two matches (A v B, A v C), every number counted by hand.
+
+    PPDA is opponent passes with x <= 72 over your defensive actions with x >= 48:
+      A  M1: B's 6 passes / A's 2 actions = 3.0   M2: C's 4 / A's 4 = 1.0
+         pooled 10 / 6 = 1.667    (the mean of the two ratios would be 2.0)
+      B  3 / 1 = 3.0           C  2 / 1 = 2.0
+    pressures_per_opp_half_touch is pressures with x >= 60 over the opponent's touches with x <= 60:
+      A  M1: 3 / 4   M2: 1 / 3   pooled 4 / 7 = 0.571   (mean of ratios 0.542)
+      B  2 / 2 = 1.0           C  1 / 1 = 1.0
+    Sequences (n_pressures in brackets): A has five (12 pressures), three of them won,
+    and A1 and A2 win the SAME possession of match 1 -- it must be credited once. A4 wins
+    possession 5 of match 2: the same number in another match, so it is a separate credit.
+      A  xT credited 0.10 + 0.20 = 0.30 over 12 pressures -> 2.5 per 100; one shot, not two
+      B  never won a ball: keeps its row, 0 xT, 0 shots, no per-sequence mean
+      C  one sequence, won high: 0.05 over 1 pressure -> 5.0 per 100
+    """
+    from xtpress.pressing_sequences import team_pressing_summary
+
+    def ev(match, team_id, team, kind, x):
+        return (match, team_id, team, kind, [x, 40.0])
+
+    rows = []
+    for x in (10.0, 30.0, 65.0):
+        rows.append(ev(1, 1, "A", "Pass", x))
+    for x in (5.0, 20.0, 40.0, 55.0, 66.0, 70.0):
+        rows.append(ev(1, 2, "B", "Pass", x))
+    rows += [ev(1, 1, "A", "Duel", 60.0), ev(1, 1, "A", "Interception", 50.0), ev(1, 2, "B", "Interception", 80.0)]
+    rows += [ev(1, 1, "A", "Pressure", x) for x in (70.0, 80.0, 90.0, 20.0)]
+    rows += [ev(1, 2, "B", "Pressure", x) for x in (75.0, 62.0, 10.0)]
+    for x in (20.0, 62.0):
+        rows.append(ev(2, 1, "A", "Pass", x))
+    for x in (10.0, 20.0, 30.0, 70.0):
+        rows.append(ev(2, 3, "C", "Pass", x))
+    rows += [ev(2, 1, "A", "Duel", 55.0)] * 4 + [ev(2, 3, "C", "Duel", 70.0)]
+    rows += [ev(2, 1, "A", "Pressure", 61.0), ev(2, 3, "C", "Pressure", 100.0)]
+    events = pd.DataFrame(rows[::-1], columns=["match_id", "team_id", "team", "type", "location"])
+
+    cols = ["sequence_id", "match_id", "team_id", "team", "n_pressures", "won_possession", "won_high",
+            "won_possession_id", "seconds_to_regain", "xt_gained", "reached_shot"]
+    nan = np.nan
+    seqs = [
+        (1, 1, 1, "A", 3, True, False, 5, 2.0, 0.10, True),     # A1  wins possession 5 ...
+        (2, 1, 1, "A", 2, True, True, 5, 1.0, 0.10, True),      # A2  ... and so does A2
+        (3, 1, 1, "A", 1, False, False, nan, nan, nan, False),
+        (4, 2, 1, "A", 4, True, False, 5, 4.0, 0.20, False),    # A4  possession 5 of ANOTHER match
+        (5, 2, 1, "A", 2, False, False, nan, nan, nan, False),
+        (6, 1, 2, "B", 2, False, False, nan, nan, nan, False),
+        (7, 1, 2, "B", 3, False, False, nan, nan, nan, False),
+        (8, 2, 3, "C", 1, True, True, 9, 3.0, 0.05, False),
+    ]
+    sequences = pd.DataFrame(seqs, columns=cols)
+
+    t = team_pressing_summary(sequences, events).set_index("team")
+
+    assert list(t.index) == ["A", "B", "C"]
+    assert np.allclose(t["ppda"], [10 / 6, 3.0, 2.0])
+    assert np.allclose(t["pressures_per_opp_half_touch"], [4 / 7, 1.0, 1.0])
+    assert list(t["n_sequences"]) == [5, 2, 1]
+    assert np.allclose(t["regain_rate"], [0.6, 0.0, 1.0])
+    assert np.allclose(t["high_regain_rate"], [0.2, 0.0, 1.0])
+    assert np.allclose(t["xt_per_100_pressures"], [2.5, 0.0, 5.0])
+    assert np.allclose(t["xt_per_successful_sequence"], [0.15, np.nan, 0.05], equal_nan=True)
+    assert list(t["shots_from_presses"]) == [1, 0, 0]
+
+
+def test_team_pressing_summary_over_the_competition(team_summary):
+    """Measured on 64 WC 2022 matches. The telling number is the last one: how hard a
+    team presses (PPDA) says almost nothing about what its pressing earns."""
+    t = team_summary.set_index("team")
+
+    assert len(t) == 32 and not t.isna().any().any()
+    assert abs(t["ppda"].median() - 11.27) < 0.02
+    assert abs(t["xt_per_100_pressures"].median() - 0.159) < 0.003
+    assert t["shots_from_presses"].sum() == 202                 # 211 if a won possession is counted twice
+    assert abs(t.loc["Canada", "xt_per_100_pressures"] - 0.325) < 0.005
+    assert abs(t.loc["Brazil", "xt_per_100_pressures"] - 0.324) < 0.005
+    assert abs(t.loc["Mexico", "ppda"] - 7.42) < 0.02
+    assert -0.3 < t["ppda"].corr(t["xt_per_100_pressures"], method="spearman") < 0.1
 
 
 def test_sequences_never_span_a_possession_change(pressures, sequences):
