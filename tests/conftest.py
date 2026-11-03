@@ -119,3 +119,34 @@ def team_summary(all_events, full_actions, model):
     sequences = ps.label_sequence_outcomes(sequences, all_events)
     sequences = ps.sequence_value(sequences, model.rate_actions(full_actions), full_actions)
     return ps.team_pressing_summary(sequences, all_events)
+
+
+@pytest.fixture(scope="session")
+def pressured(actions, model):
+    """The pressured actions of the sample match, rated and classified.
+
+    The rating is joined on first: ``classify_outcome`` needs ``xt_delta``, and
+    ``rate_actions`` keeps the original index so a plain join works.
+    """
+    from xtpress.press_resistance import classify_outcome, pressured_actions
+
+    rated = model.rate_actions(actions)[["xt_start", "xt_end", "xt_delta"]]
+    return classify_outcome(pressured_actions(actions.join(rated)))
+
+
+@pytest.fixture(scope="session")
+def pressured_all(full_actions, model):
+    """Every pressured action of the competition, rated and classified (25,270 for WC 2022)."""
+    from xtpress.press_resistance import classify_outcome, pressured_actions
+
+    rated = model.rate_actions(full_actions)[["xt_start", "xt_end", "xt_delta"]]
+    return classify_outcome(pressured_actions(full_actions.join(rated)))
+
+
+@pytest.fixture(scope="session")
+def resistance_table(pressured_all, all_events):
+    """The player leaderboard for the competition (179 players with at least 50 pressured actions)."""
+    from xtpress import loaders
+    from xtpress.press_resistance import player_press_resistance, zone_baselines
+
+    return player_press_resistance(pressured_all, zone_baselines(pressured_all), loaders.minutes_played(all_events))
