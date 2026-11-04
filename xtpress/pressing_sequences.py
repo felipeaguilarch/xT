@@ -387,8 +387,18 @@ def ppda(events: pd.DataFrame) -> pd.DataFrame:
         denominator your Duels / Interceptions / Fouls Committed
                     with x >= config.PPDA_DEFENSIVE_ACTION_MIN_X
 
-    Calibration: 7.4-12.3 on the three sample matches. If you land outside
-    6-15, check the zone filter before anything else.
+    Measured on 64 WC 2022 matches (128 team-matches): median 11.7, and 77%
+    fall inside 6-15 (range 4.2-26.3), so a value outside that band is not by
+    itself a sign of a wrong zone filter. Check the filter against the other
+    failure instead: the wrong threshold for the opponent's passes gives a median
+    of 6.7, which looks fine and is wrong.
+
+    Set-piece passes are counted. 4,130 of the 47,484 passes in the zone are
+    goal kicks, throw-ins, free kicks, corners or kick-offs (1,002 goal kicks,
+    1,437 throw-ins). Leaving them out moves the median from 11.7 to 10.5 and
+    barely moves the ranking (Spearman 0.998 across team-matches), so it is a
+    level shift, not a different result. Stated here so the number is not
+    compared with a PPDA that excludes them.
     """
     xy = pd.DataFrame(events["location"].map(_xy).tolist(), index=events.index, columns=["x", "y"])
     ev = events.join(xy)

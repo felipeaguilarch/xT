@@ -150,3 +150,15 @@ def resistance_table(pressured_all, all_events):
     from xtpress.press_resistance import player_press_resistance, zone_baselines
 
     return player_press_resistance(pressured_all, zone_baselines(pressured_all), loaders.minutes_played(all_events))
+
+
+@pytest.fixture(scope="session")
+def ctx(full_actions):
+    """Everything the README numbers come from, built once (``xtpress.report.build_context``).
+
+    Depends on ``full_actions`` so it skips itself, with the command that builds
+    the data, when the processed dataset is missing.
+    """
+    from xtpress import report
+
+    return report.build_context()

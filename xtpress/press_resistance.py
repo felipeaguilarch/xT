@@ -93,8 +93,9 @@ def classify_outcome(pressured: pd.DataFrame) -> pd.DataFrame:
     become ``retained_flat``.
 
     Measured on 64 WC 2022 matches (25,270 pressured actions): retention 80.1%
-    (90.2% when not pressured). Progressed 27.2%, flat 49.2%, dribble 3.7%,
-    lost 19.9%. Of the retained moves 36% have an ``xt_delta`` of exactly zero
+    (89.0% for the same event types when not pressured; 90.2% is passes and
+    carries alone, which is not the same population). Progressed 27.2%, flat
+    49.2%, dribble 3.7%, lost 19.9%. Of the retained moves 36% have an ``xt_delta`` of exactly zero
     (the move stayed inside one zone) and 28% are negative. Sample match: 81.2%.
     """
     assert "xt_delta" in pressured.columns, "join the rating (xt_delta) onto the actions first"

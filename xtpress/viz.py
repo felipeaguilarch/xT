@@ -20,27 +20,62 @@ from . import config
 def plot_xt_surface(grid: np.ndarray, ax=None, save_as: str | None = None):
     """Heatmap of the fitted value surface. The identity image.
 
-    Check it against the magnitude table before believing it: penalty spot
-    0.20-0.30, edge of box 0.06-0.10, halfway line 0.010-0.020, own defensive
-    third 0.002-0.008.
+    Check it before believing it. Measured on WC 2022 at 12x8 (10x10-yard
+    zones): the two goal-mouth zones (x 110-120, y 30-50) 0.186, the zone that
+    holds the penalty spot 0.089, the halfway-line zone about 0.012, the centre
+    of the own third about 0.0065. The published grid reads 0.257 and 0.108 in
+    the same first two zones. The older bands (penalty spot 0.20-0.30, box edge
+    0.06-0.10) describe finer grids than this one.
+
+    Draw with ``pcolormesh`` on zone edges in data coordinates (0..120 and
+    0..80) so the pitch owns the orientation; row 0 is y = 0. Use a square-root
+    colour norm (``PowerNorm(0.5)``): on a linear scale everything outside the
+    box looks the same colour. Label a handful of zones, not all 96.
     """
     raise NotImplementedError
 
 
 def plot_convergence(deltas: list[float], ax=None, save_as: str | None = None):
-    """Max absolute delta per iteration, log y-axis. Should be a straight line."""
+    """Max absolute delta per iteration, log y-axis. Should be a straight line.
+
+    It is, after a short transient. Plot the default model (173 iterations to a
+    1e-12 step, rho 0.880) against the textbook recursion without loss (617,
+    rho 0.964): the slope is the contraction rate. The deltas come from
+    ``ExpectedThreat.solve_iterative``, which ``fit`` does not call, so run it
+    for both fits. Label the lines directly.
+    """
     raise NotImplementedError
 
 
 def plot_reference_comparison(
     grid: np.ndarray, reference: np.ndarray, save_as: str | None = None
 ):
-    """Your grid beside Karun Singh's, with Pearson r and MAE annotated."""
+    """Your grid beside Karun Singh's, with Pearson r and MAE annotated.
+
+    Measured: r = 0.996, MAE 0.0077. Put both on ONE colour scale (the
+    reference's maximum, 0.257), or the difference in peak is hidden: this grid
+    peaks at 0.186. A third panel, one point per zone against the published
+    value, shows r directly and that the gap is a single pair of goal-mouth
+    zones.
+    """
     raise NotImplementedError
 
 
 def plot_top_progressors(table: pd.DataFrame, n: int = 20, save_as: str | None = None):
-    """Horizontal bars of xT per 90, split pass vs carry, minutes annotated."""
+    """Horizontal bars of xT per 90, split pass vs carry, minutes annotated.
+
+    No function builds the table this needs. Build it from the rated actions:
+    open play only (``~is_set_piece``), regulation periods, ``xt_delta`` summed
+    per player and action type, divided by minutes from ``minutes_played``
+    and times 90. Columns assumed: player, team, minutes, pass_p90, carry_p90,
+    total_p90.
+
+    ``config.MIN_MINUTES`` is 450 regulation minutes, five full matches, so only
+    52 players qualify and they come from only seven teams (Argentina, Croatia,
+    England, France, Morocco, Netherlands, Portugal), all of which played five or
+    more matches. Say so in the title or caption. Stack the two segments (2 px gap);
+    no top-20 player has a negative component, so a stack is safe.
+    """
     raise NotImplementedError
 
 
@@ -55,6 +90,15 @@ def plot_player_actions(
     ``Pitch.arrows(x_start, y_start, x_end, y_end, ...)`` with width scaled by
     xt_delta. Pick a legible profile -- a deep-lying playmaker and a ball-
     carrying winger look strikingly different, which is exactly the point.
+    Luka Modric (mostly passes into the box) and Kylian Mbappe (long carries down
+    the left) show it on WC 2022.
+
+    ``Pitch.arrows`` passes ``width`` to ``quiver``, which takes one scalar, so
+    draw one arrow per call. Scale the width with ``sqrt(xt_delta / max)`` in a
+    narrow range (about 1.6 to 3.8): linear makes one arrow dominate and warps
+    the arrowheads. Colour pass and carry with two categorical colours and a
+    legend; rows come from ``rate_actions``, so ``player`` is the full StatsBomb
+    name and needs a display-name map.
     """
     raise NotImplementedError
 
@@ -62,7 +106,17 @@ def plot_player_actions(
 def plot_team_xt_vs_goals(summary: pd.DataFrame, save_as: str | None = None):
     """Held-out scatter of team xT against goals. The credibility image.
 
-    Annotate Spearman rho; 0.45-0.65 is healthy for a model this simple.
+    Annotate Spearman rho. Only WC 2022 is processed, so "held out" here means
+    cross-fitting by match: fit the grid on the odd-numbered matches, rate the
+    even ones, and the reverse, so no match is rated by a grid that saw it.
+
+    Measured that way (net xT per match, open play, regulation time, against
+    goals per match): rho 0.30 across the 32 teams and 0.25 across the 128
+    team-matches; against xG per team-match 0.56. In-sample it is the same
+    (0.25), so the held-out step is not what lowers it: goals are rare (165 in
+    128 team-matches) and noisy. The 0.45-0.65 band does not hold against goals.
+    Report the number as measured, with the xG figure beside it, and do not
+    caption it as validation of the xT model.
     """
     raise NotImplementedError
 
@@ -74,6 +128,13 @@ def plot_team_pressing(summary: pd.DataFrame, save_as: str | None = None):
 
     Label the outliers only. A team that presses hard and earns little is the
     story you are looking for.
+
+    PPDA is better when lower, so invert the x axis and say "presses harder" on
+    it. Annotate rho = -0.09 with its interval. The README quotes -0.44 to 0.28:
+    a percentile bootstrap over the 32 teams, 4,000 resamples, seed 0, computed
+    by ``report.bootstrap_spearman``. Call that rather than re-implementing it, so
+    the figure and the README cannot disagree; the upper end moves in the second
+    decimal with the seed.
     """
     raise NotImplementedError
 
@@ -83,6 +144,14 @@ def plot_press_resistance_quadrant(table: pd.DataFrame, save_as: str | None = No
 
     Draw the axes through zero so the four quadrants read immediately, label
     the extremes only, and leave everyone else as unlabelled points.
+
+    Plot retention in percentage points and threat times 1,000 so the axis labels
+    are readable. Draw the unlabelled points in a neutral grey, not by position
+    group (four groups cannot all be told apart in a scatter). Two additions the
+    data asks for: size the points by ``n_pressured``, and draw one cross at
+    +/- 1 standard error (retention about 4.6 points at the median 74 actions,
+    threat about 0.0012). The spread between players is only about 1.2 and 1.3
+    standard errors, which is the honest reading of the whole figure.
     """
     raise NotImplementedError
 
@@ -104,13 +173,18 @@ def plot_press_resistance_leaderboard(
       * Colour by position group, with a small legend. Press resistance means
         something different for a centre-back than for a winger, and the
         colour does that caveat silently.
-      * Draw a vertical line at zero. The scores are residuals above
-        expectation, so zero is "exactly as expected given where they receive
-        the ball" -- and that reference point is the whole argument for the
-        adjusted metric.
+      * Draw a vertical line at zero, but read it correctly. The score is a
+        blend of z-scores, so zero is the average of the players in the table,
+        not "exactly as expected given where they receive the ball" (the mean
+        retention above expectation among them is +0.8 points). For that
+        reference use the raw residual axes, as the quadrant does.
 
-    If you shrank the estimates (workbook Ch 15), plot the shrunk values and
-    say so in the caption.
+    The estimates are not shrunk (workbook Ch 15), so say "raw, not shrunk" in
+    the caption. Shrinkage is the natural fix for what the data shows: with
+    about 74 pressured actions per player, rank stability across halves of the
+    tournament is only 0.26. StatsBomb names are the full legal names ("Abdelkarim
+    Hassan Al Haj Fadlalla"), so keep a display-name map. Colour by group with
+    DF, MF, FW, GK in that order and a legend.
     """
     raise NotImplementedError
 
@@ -127,8 +201,22 @@ def plot_case_study(
     annotated with the real minute and player names. This is the figure people
     remember -- it turns a statistical claim into something a coach recognises.
 
-    The pressures need mirroring into the possession frame
-    (``pressing_sequences.to_possession_frame``) before they line up with the
-    possession that followed.
+    Draw the pressures and the won possession as they are, with no mirroring:
+    both are the pressing team's own events, in the same frame (raw pressure
+    positions sit a median 15.8 yards from the regain, against 68.1 if mirrored).
+    ``to_possession_frame`` is only for the opponent's action the press
+    affected, which is in the other team's frame.
+
+    Practical points. ``build_press_sequences`` does not return the pressure ids,
+    so select the pressures by (match_id, team_id, period, start_time <=
+    time_seconds <= end_time) and the possession by (match_id, possession ==
+    won_possession_id, team_id). The possession's first event is often a Duel or
+    Ball Recovery that is not in the action frame (here a duel), so mark the
+    regain from the sequence's ``regain_x`` and ``regain_y`` and do not label the
+    first action as the regain. Stop at the first shot: the possession can run
+    on. Use a sequence with at least three pressures, since 76% have one. The
+    clean one on WC 2022 is 772, Brazil v Serbia just after half-time: three
+    pressures, the ball won 0.8 s later at x = 99, a shot by Raphinha with
+    xG 0.42 two actions later.
     """
     raise NotImplementedError
