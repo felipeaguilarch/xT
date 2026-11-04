@@ -11,8 +11,42 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.colors import LinearSegmentedColormap, PowerNorm
+from mplsoccer import Pitch
 
 from . import config
+from .report import short_name
+
+
+SURFACE, INK2, MUTED, GRID = "#fcfcfb", "#52514e", "#898781", "#e1e0d9"
+BLUE, ORANGE, AQUA, YELLOW = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"        # categorical, in this order
+XT_RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]   # light to dark blue
+XT_CMAP = LinearSegmentedColormap.from_list("xt", XT_RAMP)
+
+
+def _pitch(ax=None):
+    """A StatsBomb pitch on ``ax`` (a new figure if None). Returns (pitch, ax)."""
+    pitch = Pitch(pitch_type="statsbomb", pitch_color=SURFACE, line_color=MUTED, linewidth=1, line_zorder=3)
+    if ax is None:
+        _, ax = pitch.draw(figsize=(10, 6.8))
+    else:
+        pitch.draw(ax=ax)
+    return pitch, ax
+
+
+def _save(ax, save_as):
+    if save_as:
+        ax.figure.savefig(config.FIGURES_DIR / save_as, dpi=140, bbox_inches="tight", facecolor=SURFACE)
+
+def _heat(ax, grid, norm):
+    """Draw ``grid`` as zone rectangles under the pitch lines. Returns the mesh."""
+    rows, cols = grid.shape
+    x_edges = np.linspace(0, config.PITCH_LENGTH, cols + 1)
+    y_edges = np.linspace(0, config.PITCH_WIDTH, rows + 1)
+    return ax.pcolormesh(x_edges, y_edges, grid, cmap=XT_CMAP, norm=norm, zorder=2,
+                         edgecolors=SURFACE, linewidth=0.6)
 
 
 # -- Part One ---------------------------------------------------------------
@@ -32,19 +66,71 @@ def plot_xt_surface(grid: np.ndarray, ax=None, save_as: str | None = None):
     colour norm (``PowerNorm(0.5)``): on a linear scale everything outside the
     box looks the same colour. Label a handful of zones, not all 96.
     """
-    raise NotImplementedError
+    pitch, ax = _pitch(ax)
+
+    rows, cols = grid.shape
+    x_edges = np.linspace(0, config.PITCH_LENGTH, cols + 1)
+    y_edges = np.linspace(0, config.PITCH_WIDTH, rows + 1)
+
+    norm = PowerNorm(gamma=0.5, vmin=0, vmax=grid.max())
+    mesh = ax.pcolormesh(x_edges, y_edges, grid,
+                         cmap=XT_CMAP, norm=norm, zorder=2, edgecolors=SURFACE, linewidth=0.6)
+
+    zone_w = config.PITCH_LENGTH / cols
+    zone_h = config.PITCH_WIDTH / rows
+    for row, col in [(3, 11), (4, 10), (3, 6), (3, 1)]:
+        x = (col + 0.5) * zone_w
+        y = (row + 0.5) * zone_h
+        ax.text(x, y, f"{grid[row, col]:.3f}", ha="center", va="center", fontsize=9, zorder=4,
+                color="#ffffff" if norm(grid[row, col]) > 0.45 else "#0b0b0b")
+
+    cbar = ax.figure.colorbar(mesh, ax=ax, fraction=0.03, pad=0.02,
+                              ticks=[0.005, 0.02, 0.05, 0.1, 0.15])
+    cbar.set_label("Expected Threat of a zone (square-root colour scale)", fontsize=9)
+
+    ax.set_title("Threat is concentrated in the two zones in front of goal", loc="left", pad=12)
+    _save(ax, save_as)
+    return ax
 
 
-def plot_convergence(deltas: list[float], ax=None, save_as: str | None = None):
+
+def plot_convergence(series: dict[str, list[float]], ax=None, save_as: str | None = None):
     """Max absolute delta per iteration, log y-axis. Should be a straight line.
 
-    It is, after a short transient. Plot the default model (173 iterations to a
-    1e-12 step, rho 0.880) against the textbook recursion without loss (617,
-    rho 0.964): the slope is the contraction rate. The deltas come from
-    ``ExpectedThreat.solve_iterative``, which ``fit`` does not call, so run it
-    for both fits. Label the lines directly.
+    It is, after a short transient. ``series`` maps a label to the ``deltas``
+    that ``ExpectedThreat.solve_iterative`` returns (``fit`` does not call it, so
+    run it for each fit). Plot the default model (173 iterations to a 1e-12 step,
+    rho 0.880) against the textbook recursion without loss (617, rho 0.964): the
+    slope is the contraction rate. Label each line directly at its end with the
+    iteration count and rho (the last delta over the one before it), not with a
+    legend, and mark the 1e-12 stopping step.
+
+    This takes a dict, not one list as the scaffold did, because the figure is
+    the comparison of two fits.
     """
-    raise NotImplementedError
+    if ax is None:
+        _, ax = plt.subplots(figsize=(9, 5))
+
+    for (label, deltas), colour in zip(series.items(), [BLUE, ORANGE]):
+        iterations = np.arange(1, len(deltas) + 1)
+        ax.semilogy(iterations, deltas, color=colour, lw=2)
+        rho = deltas[-1] / deltas[-2]
+        ax.text(len(deltas) + 8, deltas[-1], f"{label}\n{len(deltas)} iterations, rho = {rho:.3f}",
+                color=INK2, fontsize=9.5, va="center")
+
+    ax.axhline(1e-12, color=MUTED, lw=1, ls=(0, (4, 4)))
+    ax.text(3, 1.6e-12, "stopping step 1e-12", color=MUTED, fontsize=9, va="bottom")
+
+    ax.set_xlim(0, max(len(d) for d in series.values()) * 1.45)   # room on the right for the labels
+    ax.set_xlabel("iteration")
+    ax.set_ylabel("largest change in any zone's value per iteration")
+    ax.yaxis.grid(True, color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    ax.set_title("Each iteration shrinks the error by a constant factor, and modelling loss needs 173 steps, not 617",
+                 loc="left", pad=12, fontsize=11)
+    _save(ax, save_as)
+    return ax
+
 
 
 def plot_reference_comparison(
@@ -57,18 +143,91 @@ def plot_reference_comparison(
     peaks at 0.186. A third panel, one point per zone against the published
     value, shows r directly and that the gap is a single pair of goal-mouth
     zones.
+
+    Three panels need their own figure, so there is no ``ax``: create the
+    figure, and return it.
     """
-    raise NotImplementedError
+    r = np.corrcoef(grid.ravel(), reference.ravel())[0, 1]                               # 1
+    mae = np.abs(grid - reference).mean()                                                         # 2
+
+    pitch = Pitch(pitch_type="statsbomb", pitch_color=SURFACE, line_color=MUTED, linewidth=1, line_zorder=3)
+    fig = plt.figure(figsize=(15.5, 4.6))
+    gs = fig.add_gridspec(1, 3, width_ratios=[1.3, 1.3, 0.85], wspace=0.22)                 # 3
+    norm = PowerNorm(gamma=0.5, vmin=0, vmax=reference.max())                                           # 4
+
+    axes = []
+    for i, (g, title) in enumerate([(grid, "Grid (fitted on WC2022)"), (reference, "Karun Singh’s published grid")]):                   # 5
+        ax = fig.add_subplot(gs[0, i])
+        pitch.draw(ax=ax)                                                                    # 6
+        mesh = _heat(ax, g, norm)
+        ax.set_title(title, fontsize=12, pad=8)
+        ax.text(60, 84.5, f"max {g.max():.3f}", ha="center", color=INK2, fontsize=9)         # 7
+        axes.append(ax)
+    cbar = fig.colorbar(mesh, ax=axes, location="bottom", fraction=0.06, pad=0.1, shrink=0.6)
+    cbar.set_label("Expected Threat of a zone (square-root colour scale, shared by both grids)", fontsize=9)                                     # 8
+
+    ax = fig.add_subplot(gs[0, 2])
+    ax.scatter(reference.ravel(), grid.ravel(), s=22, color=BLUE, alpha=0.8, edgecolor=SURFACE)   # 9
+    lim = [0, reference.max() * 1.05]
+    ax.plot(lim, lim, color=MUTED, lw=1, ls=(0, (4, 4)))                                     # 10
+    ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect("equal")
+    ax.set_xlabel("Karun Singh’s published grid"); ax.set_ylabel("Grid (fitted on WC2022)")
+    ax.text(0.04, 0.96, f"Pearson r = {r:.3f}\nMAE = {mae:.4f}",
+            transform=ax.transAxes, va="top", fontsize=11)                                   # 11
+    ax.yaxis.grid(True, color=GRID, lw=0.8); ax.xaxis.grid(True, color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    ax.set_title("Zone by zone (96 zones)", fontsize=12, pad=8)
+
+    fig.suptitle("The WC 2022 has the shape of Karun Singh's but is flatter at the goal", x=0.125, ha="left", y=1.03, fontsize=14, fontweight="bold")         # 12
+    if save_as:
+        fig.savefig(config.FIGURES_DIR / save_as, dpi=140, bbox_inches="tight", facecolor=SURFACE)
+    return fig
 
 
-def plot_top_progressors(table: pd.DataFrame, n: int = 20, save_as: str | None = None):
+def progressor_table(rated: pd.DataFrame, minutes: pd.DataFrame, min_minutes: float = config.MIN_MINUTES) -> pd.DataFrame:
+    """One row per player: net xT per 90 from passes and from carries.
+
+    This is what ``plot_top_progressors`` draws; nothing else in the package
+    builds it. ``rated`` is the output of ``ExpectedThreat.rate_actions`` (only
+    successful passes and carries) and ``minutes`` that of ``loaders.minutes_played``
+    (one row per match and player).
+
+    Open play only (``~is_set_piece``) and regulation periods
+    (``config.REGULATION_PERIODS``), so extra time and set pieces are out of both
+    the xT and, because ``minutes_played`` is regulation only, the minutes.
+    ``xt_delta`` is summed per player and action type, divided by the player's
+    total minutes and multiplied by 90. Players under ``min_minutes`` are dropped.
+
+    Returns columns ``player, team, minutes, pass_p90, carry_p90, total_p90``,
+    sorted by ``total_p90`` descending, indexed by ``player_id``. A player with
+    no rated pass or carry has 0 for it, not NaN. ``rated.player_id`` is a float
+    (it has gaps elsewhere in the frame) and ``minutes.player_id`` an int, so make
+    them agree before joining.
+    """
+    open_play = rated[(~rated.is_set_piece) & rated.period.isin(config.REGULATION_PERIODS)].copy()
+    open_play["player_id"] = open_play.player_id.astype(int)
+
+    by_type = open_play.pivot_table(index="player_id", columns="action_type",
+                                    values="xt_delta", aggfunc="sum", fill_value=0)
+
+    per_player = minutes.groupby("player_id").agg(minutes=("minutes", "sum"),
+                                                  player=("player", "first"), team=("team", "first"))
+
+    table = per_player.join(by_type).fillna(0)
+    table = table[table.minutes >= min_minutes].copy()
+
+    table["pass_p90"] = table["pass"] / table.minutes * 90
+    table["carry_p90"] = table["carry"] / table.minutes * 90
+    table["total_p90"] = table["pass_p90"] + table["carry_p90"]
+
+    return table[["player", "team", "minutes", "pass_p90", "carry_p90", "total_p90"]].sort_values("total_p90", ascending=False)
+
+
+def plot_top_progressors(table: pd.DataFrame, n: int = 20, ax=None, save_as: str | None = None):
     """Horizontal bars of xT per 90, split pass vs carry, minutes annotated.
 
-    No function builds the table this needs. Build it from the rated actions:
-    open play only (``~is_set_piece``), regulation periods, ``xt_delta`` summed
-    per player and action type, divided by minutes from ``minutes_played``
-    and times 90. Columns assumed: player, team, minutes, pass_p90, carry_p90,
-    total_p90.
+    ``table`` is ``progressor_table``'s output. Columns used: player, team,
+    minutes, pass_p90, carry_p90, total_p90.
 
     ``config.MIN_MINUTES`` is 450 regulation minutes, five full matches, so only
     52 players qualify and they come from only seven teams (Argentina, Croatia,
@@ -76,13 +235,38 @@ def plot_top_progressors(table: pd.DataFrame, n: int = 20, save_as: str | None =
     more matches. Say so in the title or caption. Stack the two segments (2 px gap);
     no top-20 player has a negative component, so a stack is safe.
     """
-    raise NotImplementedError
+    top = table.sort_values("total_p90", ascending=False).head(n).iloc[::-1]
+    if ax is None:
+        _, ax = plt.subplots(figsize=(10, 7.4))
+    y = np.arange(len(top))
+
+    ax.barh(y, top.pass_p90, height=0.62, color=BLUE, edgecolor=SURFACE, linewidth=2, label="passes")
+    ax.barh(y, top.carry_p90, left=top.pass_p90, height=0.62, color=ORANGE, edgecolor=SURFACE,
+            linewidth=2, label="carries")
+
+    for yi, (_, row) in zip(y, top.iterrows()):
+        ax.text(row.total_p90 + 0.004, yi, f"{row.total_p90:.3f}   {int(round(row.minutes))} min",
+                va="center", fontsize=9.5, color=INK2)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels([f"{short_name(r.player)} ({r.team})" for _, r in top.iterrows()], fontsize=10)
+    ax.set_xlim(0, top.total_p90.max() * 1.3)
+    ax.set_xlabel("net xT per 90, from open play")
+    ax.xaxis.grid(True, color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="y", length=0)
+    ax.legend(loc="lower right", frameon=False, handlelength=1.2)
+    ax.set_title(f"Top {n} progressors with at least {config.MIN_MINUTES} minutes", loc="left",
+                  pad=12, fontsize=11)
+    _save(ax, save_as)
+    return ax
 
 
 def plot_player_actions(
     rated_actions: pd.DataFrame,
     player: str,
     n: int = 30,
+    ax=None,
     save_as: str | None = None,
 ):
     """One player's highest-xT actions as arrows on a pitch.
@@ -100,7 +284,23 @@ def plot_player_actions(
     legend; rows come from ``rate_actions``, so ``player`` is the full StatsBomb
     name and needs a display-name map.
     """
-    raise NotImplementedError
+    pitch, ax = _pitch(ax)                                                                   # 1
+
+    top = rated_actions[rated_actions.____ == player].nlargest(n, "____")                    # 2
+    biggest = top.xt_delta.max()
+
+    for kind, colour in (("pass", ____), ("carry", ____)):                                   # 3
+        for _, a in top[top.action_type == ____].iterrows():                                 # 4
+            pitch.arrows(a.start_x, a.start_y, a.____, a.____, ax=ax, color=colour, zorder=4,
+                         width=____ + ____ * np.sqrt(a.xt_delta / ____),
+                         headwidth=4, headlength=4, alpha=0.9)                               # 5
+
+    ax.legend(handles=[Line2D([0], [0], color=BLUE, lw=3, label="____"),
+                       Line2D([0], [0], color=ORANGE, lw=3, label="____")],
+              loc="lower center", bbox_to_anchor=(0.5, -0.09), ncol=2, frameon=False)        # 6
+    ax.set_title(f"____", loc="left", pad=8)                                                 # 7
+    _save(ax, save_as)
+    return ax
 
 
 def plot_team_xt_vs_goals(summary: pd.DataFrame, save_as: str | None = None):
