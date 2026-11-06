@@ -14,13 +14,13 @@ calls none of them, so it prints nothing.
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 import pandas as pd
 import pytest
-import json
 
 from xtpress import config
-
 
 # -- Phase 00 ---------------------------------------------------------------
 
@@ -1048,11 +1048,11 @@ def test_classify_outcome_known_answer():
     assert list(out.index) == list(range(100, 110))
     pd.testing.assert_frame_equal(pressured, before)                       # the input is left alone
 
-    with pytest.raises(AssertionError):                                    # the rating was never joined
+    with pytest.raises(ValueError):                                        # the rating was never joined
         classify_outcome(pressured.drop(columns="xt_delta"))
     unrated = pressured.copy()
     unrated.loc[100, "xt_delta"] = np.nan                                  # a successful pass with no rating
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         classify_outcome(unrated)
 
 

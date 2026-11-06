@@ -2,14 +2,11 @@
 
 Expected Threat and pressing analysis built from scratch on StatsBomb open data.
 
-> **Status:** work in progress. Part I (Expected Threat, action rating, minutes played),
-> Part II (pressing sequences, PPDA, the xT value of what a press wins) and Part III
-> (player-level press resistance) are implemented and validated; the figures
-> (`xtpress/viz.py`) are still to do.
+This project asks whether pressing harder pays off, using the 64 matches of the 2022 World Cup in StatsBomb's open data. It fits an Expected Threat model (a value for each zone of the pitch), uses it to value what each team's press wins back, and then asks a related question of individual players: how well they keep the ball when they are pressed. All of the code is in `xtpress/`, every number below is recomputed by it and pinned by the tests, and the figures are drawn by `python -m xtpress.viz`.
 
 ## Contents
 
-1. [The finding](#the-finding)
+1. [The findings](#the-findings)
 2. [Why it matters](#why-it-matters)
 3. [How it is measured](#how-it-is-measured)
    - [Expected Threat](#expected-threat)
@@ -32,26 +29,15 @@ Expected Threat and pressing analysis built from scratch on StatsBomb open data.
 
 ---
 
-## The finding
+## The findings
 
-How hard a team presses says little about what the pressing earns. Across the 32 teams
-at WC 2022, PPDA and the expected threat won per 100 pressures show no detectable
-relationship (Spearman ρ = −0.09, 95% bootstrap interval −0.44 to 0.28): Mexico pressed
-hardest (PPDA 7.4) and earned 0.073, while Brazil pressed at a middling 10.4 and earned
-0.324.
+In short: the Expected Threat model gets the shape of the pitch right, but at the size of one World Cup neither teams nor players separate cleanly. Pressing harder shows no detectable gain, and most of the spread between players under pressure is noise.
 
-At player level the same caution applies, more strongly. Pressured, a player keeps the ball
-80.1% of the time (89.0% when not pressured), and once that is adjusted for the zone the
-ball was received in, the 179 players with at least 50 pressured actions run from −15.8 to
-+12.0 percentage points around expectation. But most of that spread is sampling noise: a
-typical player has about 74 pressured actions, which alone gives a standard error of
-4.6 points against an observed spread of 5.4, and ranking the players on odd and even
-matches separately gives a rank correlation of only 0.26 for retention and 0.32 for threat.
-The leaderboard describes this tournament; it is not a measure of a stable skill.
+**Expected Threat.** Threat is concentrated in front of goal: the two goal-mouth zones are worth 0.186 each against 0.012 in the central zone just past the halfway line (Figure 1). The fitted grid agrees in shape with Karun Singh's published one (r = 0.996) but not in height, with 0.186 in the goal-mouth zones against 0.257 (Figure 3). Rated by a grid that never saw the match, a team's xT per match is only weakly tied to its goals: Spearman ρ = 0.30 across the 32 teams (95% bootstrap interval −0.09 to 0.62), below the 0.45–0.65 set in advance (Figure 6).
 
-*Provisional: the headline is still the pressing one and has not been rewritten around
-Part III. The figure for press resistance, `figures/press_resistance.png`, is not
-generated yet.*
+**Pressing.** How hard a team presses says little about what the pressing earns. Across the 32 teams at WC 2022, PPDA and the expected threat won per 100 pressures show no detectable relationship (Spearman ρ = −0.09, 95% bootstrap interval −0.44 to 0.28): Mexico pressed hardest (PPDA 7.4) and earned 0.073, while Brazil pressed at a middling 10.4 and earned 0.324 (Figure 7). When a press does win the ball it does so quickly and deep: the median regain comes 2.5 s after the last pressure and at x = 37, and only 5% are won in the final third.
+
+**Press resistance.** At player level the same caution applies, more strongly. Pressured, a player keeps the ball 80.1% of the time (89.0% when not pressured), and once that is adjusted for the zone the ball was received in, the 179 players with at least 50 pressured actions run from −15.8 to +12.0 percentage points around expectation. But most of that spread is sampling noise: a typical player has about 74 pressured actions, which alone gives a standard error of 4.6 points against an observed spread of 5.4, and ranking the players on odd and even matches separately gives a rank correlation of only 0.26 for retention and 0.32 for threat. The leaderboard describes this tournament; it is not a measure of a stable skill (Figures 9 and 10).
 
 ## Why it matters
 
@@ -65,7 +51,7 @@ The pitch is split into a 12×8 grid. Each zone's value is the probability that 
 
 ### Pressing
 
-Pressure events are grouped into sequences: within a team and match, a new sequence starts after a 5 s gap, a change of possession, or a new period. A sequence succeeds if the next possession belongs to the pressing team and starts within 8 s of the last pressure, and it is "high" if the ball is won in the opponent's half. The xT of everything that possession went on to produce is added up from the same rated actions as Part I, so pressing is priced in the same units as every pass and carry, and each won possession is credited once. Intensity is reported two ways: PPDA, and pressures per opponent-half touch. See[`xtpress/pressing_sequences.py`](xtpress/pressing_sequences.py).
+Pressure events are grouped into sequences: within a team and match, a new sequence starts after a 5 s gap, a change of possession, or a new period. A sequence succeeds if the next possession belongs to the pressing team and starts within 8 s of the last pressure, and it is "high" if the ball is won in the opponent's half. The xT of everything that possession went on to produce is added up from the same rated actions as Part I, so pressing is priced in the same units as every pass and carry, and each won possession is credited once. Intensity is reported two ways: PPDA, and pressures per opponent-half touch. See [`xtpress/pressing_sequences.py`](xtpress/pressing_sequences.py).
 
 ### Press resistance
 
@@ -158,22 +144,101 @@ Pooled over all 40 goalkeepers, 760 pressured actions are 81.3% retained (56% of
 
 ## Supporting evidence
 
-| Figure                            | What it shows                                          |
-| --------------------------------- | ------------------------------------------------------ |
-| ![](figures/xt_surface.png)       | The fitted value surface.                              |
-| ![](figures/team_pressing.png)    | Pressing intensity against pressing payoff.            |
-| ![](figures/case_study.png)       | One sequence: the press, the turnover, what followed.  |
-| ![](figures/press_resistance.png) | Players: retention against threat, both zone-adjusted. |
+Ten figures, drawn by `xtpress/viz.py`; `python -m xtpress.viz` regenerates all of them (`viz.build_all`), and each plotting function also writes its own file when given `save_as`.
+Under each figure is one reading of it, and the numbers in those readings are computed by `report.figure_facts` (`python -m xtpress.report figures`, pinned by `test_figure_facts`) or by the section its note names.
 
-*Figure 1.* The fitted value surface. *Note.* The grid is `report.build_context().model.grid()`; drawn by `viz.plot_xt_surface` (not implemented yet).
+#### `viz.plot_xt_surface`
 
-*Figure 2.* Pressing intensity against pressing payoff, one point per team. *Note.* Data: `report.build_context().summary`; drawn by `viz.plot_team_pressing` (not implemented yet). The correlation and its interval are `report.bootstrap_spearman` (4,000 resamples, seed 0).
+![Figure 1](figures/xt_surface.png)
 
-*Figure 3.* One pressing sequence: the press, the turnover, what followed. *Note.* Data: one row of `report.build_context().sequences` with its pressures and the possession it won; drawn by `viz.plot_case_study` (not implemented yet).
+*Figure 1.* The fitted value surface: the probability that a possession starting in each zone ends in a goal, on a square-root colour scale.
+Threat is concentrated in front of goal: the two goal-mouth zones are worth 0.186 each and the zone holding the penalty spot 0.089, against 0.012 in the central zone just past the halfway line and 0.005 in own goal.
+Only four of the 96 zones are worth more than 0.05, inside the 6 yard box and penalty spot.
+*Note.* Data: `report.build_context().model.grid()`. The scale is square-root because on a linear one everything outside the box is the same colour.
 
-*Figure 4.* Players: retention against threat, both adjusted for the zone. *Note.* Data: `report.build_context().players`; drawn by `viz.plot_press_resistance_quadrant` (not implemented yet).
+#### `viz.plot_convergence`
 
-*The figures are generated by `xtpress/viz.py` and exported to `figures/`, which is tracked in git (unlike `data/raw` and `data/processed`) so the images render on GitHub. They are not generated yet, so the links do not resolve. Add one line of interpretation under each when they are.*
+![Figure 2](figures/convergence.png)
+
+*Figure 2.* Convergence of the value iteration: the largest change in any zone's value at each step, on a log axis, for the default model and for the textbook recursion without loss.
+Both lines are straight after a short start, so the change shrinks by the same factor at every step: 0.880 for the default model and 0.964 for the textbook form.
+The default needs 173 steps to reach a step of 1e-12 and the textbook form 617, because modelling loss lets a failed move take value out of the chain as well as a shot.
+*Note.* Data: `ExpectedThreat.solve_iterative` for each fit. The grid itself comes from the closed-form solve, and this iteration is the independent check on it (first row of Table 5).
+
+#### `viz.plot_reference_comparison`
+
+![Figure 3](figures/reference_comparison.png)
+
+*Figure 3.* The fitted grid beside Karun Singh's published 12×8 grid on one colour scale, and the 96 zones plotted against each other.
+The two agree in shape (Pearson r = 0.996, mean absolute error 0.0077) but not in height: the largest gaps are the two goal-mouth zones, 0.186 here against 0.257 in the published grid.
+Those two zones hold only 19% of the total absolute error, and 16 of the 96 zones are off by more than 0.01, so the agreement is of shape and not of values.
+*Note.* Data: `report.build_context().model.grid()` and `load_reference_grid()`. The published grid was fitted on other leagues (see Validation).
+
+#### `viz.plot_top_progressors`
+
+![Figure 4](figures/top_progressors.png)
+
+*Figure 4.* The 20 players with the most net xT per 90 minutes from open play, split into passes and carries, for players with at least 450 regulation minutes.
+Only 52 players reach 450 minutes (five full matches) and they come from seven teams, all of which played five matches or more, so this is a list of the players who played the most.
+Ousmane Dembélé (0.250), Kylian Mbappé (0.247) and Lionel Messi (0.219) lead it; passes make up 65% of the top 20's xT, and only four of the 20 get more from carries than from passes.
+*Note.* Data: `viz.progressor_table(ctx.rated, ctx.minutes)`. Net xT, so backward moves count against a player.
+
+#### `viz.plot_player_actions`
+
+![Figure 5a](figures/player_modric.png) ![Figure 5b](figures/player_mbappe.png)
+
+*Figure 5.* The 30 actions with the most xT for one player, as arrows whose width shows the gain: Luka Modrić (a) and Kylian Mbappé (b).
+The two profiles differ: 21 of Modrić's 30 are passes and 18 of Mbappé's 30 are carries, 17 of them starting in the left third of the pitch.
+*Note.* Data: `report.build_context().rated`, which takes the player's full StatsBomb name.
+
+#### `viz.plot_team_xt_vs_goals`
+
+![Figure 6](figures/team_xt_vs_goals.png)
+
+*Figure 6.* Net xT created per match against goals per match, one point per team, with the grid cross-fitted by match (below).
+Teams that create more xT score slightly more, but the link is weak: Spearman rho = 0.30 across the 32 teams (95% bootstrap interval −0.09 to 0.62) and 0.25 across the 128 team-matches (0.07 to 0.42), below the 0.45–0.65 set in advance.
+Germany created the most xT (2.05 per match) and scored 2.0 goals a match, while England scored the most (2.6) from 1.11, so goals, which are rare, add a lot of noise.
+Against the xG of the shots behind the goals xT does about as well as goals do (0.54 across teams, 0.56 across team-matches), which is why this figure is not presented as validation of the model.
+*Note.* Data: `report.cross_fitted_team_matches(ctx)`;  the correlations are `report.team_xt_vs_goals`.
+
+*Why the grid is cross-fitted.* The grid is fitted from matches, so a match rated by a grid that was fitted partly on it would help to set its own standard.
+To avoid that, the 64 matches are sorted by id and split into two halves, odd and even; a grid fitted on one half (32 matches) rates the other half, and the reverse, so every match is rated by a grid that never saw it. It is a train and test split in which each half takes a turn as the test set.
+The grid is a tournament-average yardstick of how valuable each zone is, so a match's net xT says how much threat the team created by that yardstick and not how much its own tactics suited it.
+The fitting never uses goals (a zone's shot value is the mean xG of its shots), so the comparison with goals is a comparison with something the grid has not seen; fitting on all matches instead gives the same 0.25 across team-matches.
+
+#### `viz.plot_team_pressing`
+
+![Figure 7](figures/team_pressing.png)
+
+*Figure 7.* Pressing intensity (PPDA, with the axis reversed so that harder pressing is to the right) against xT won per 100 pressures, one point per team; the dashed lines are the medians and the five teams furthest from the centre are labelled.
+Pressing harder shows no detectable gain: Spearman rho = −0.09 across the 32 teams, with a 95% bootstrap interval of −0.44 to 0.28.
+Mexico pressed hardest (PPDA 7.4) and won 0.073 xT per 100 pressures, while Brazil (10.4) and Canada (13.6) won 0.324 and 0.325.
+*Note.* Data: `report.build_context().summary`. The correlation and its interval are `report.bootstrap_spearman` (4,000 resamples, seed 0).
+
+#### `viz.plot_case_study`
+
+![Figure 8](figures/case_study.png)
+
+*Figure 8.* One pressing sequence from start to finish: Brazil's press against Serbia just after half-time, with the three pressures in the order they happened, the point where the ball was won, and the possession that followed up to the first shot.
+Three pressures over 4.9 s, the ball won 0.8 s after the last one, then a carry of about 11 yards and a shot by Raphinha with an xG of 0.42; the possession gained 0.063 xT, against a mean of 0.0139 for a won sequence.
+*Note.* Data: row 772 of `report.build_context().sequences` (selected by its `sequence_id` column) with its pressures and the possession it won.
+
+#### `viz.plot_press_resistance_quadrant`
+
+![Figure 9](figures/press_resistance_quadrant.png)
+
+*Figure 9.* The 179 players with at least 50 pressured actions: retention under pressure against xT per retained move, both compared with what the zone predicts, with a cross showing one typical standard error.
+The four quadrant labels say where a player sits, not what kind of player he is. Players run from −15.8 to +12.0 points on retention, but the spread between players is only 1.2 standard errors on retention and 1.3 on threat, so most of what separates them is what sampling noise alone would produce.
+*Note.* Data: `report.build_context().players`; the standard errors are `report.press_resistance_standard_errors`.
+
+#### `viz.plot_press_resistance_leaderboard`
+
+![Figure 10](figures/press_resistance_leaderboard.png)
+
+Figure 10.* The 20 outfield players with the highest press-resistance score, coloured by position group, with the number of pressured actions beside each bar; goalkeepers are not ranked.
+Forwards fill 10 of the top 20 against 37% of outfield players, with 6 defenders and 4 midfielders, but they have the lowest mean score of the three groups, so the top of the table says nothing about forwards as a group. The number of pressured actions runs from 50 (Rafael Leão) to 352 (Lionel Messi), so some of these scores rest on far less evidence than others.
+The scores are raw, not shrunk, and the rank correlation between odd and even matches is only 0.26 for retention and 0.32 for threat, so this describes the tournament and does not measure a stable skill.
+*Note.* Data: `report.build_context().players`.
 
 ## Validation
 
@@ -275,6 +340,8 @@ The team-level check against goals does not reach the 0.45–0.65 set in advance
 - Per-zone completion rates rest on as few as 50 attempts in the quietest zones.
 - The PPDA–payoff correlation is small at every regain window from 2 to 15 s (−0.05 to −0.23), so the finding is not an artefact of the 8 s choice. The larger uncertainty is the sample: the 95% bootstrap interval over the 32 teams is −0.44 to 0.28 (percentile method, 4,000 resamples of the teams, seed 0; 10,000 resamples give the same to two decimals). It is computed by `report.bootstrap_spearman`.
 - Counterpress sequences are pooled with the rest although they behave differently (lower regain rate, higher share won high), so a team that counterpresses a lot is not directly comparable with one that does not.
+- Cross-fitting rates every match against a grid built from other matches, so a team's xT is measured against the tournament-average way of moving the ball: the grid knows nothing about a match's tactics or opponent, and a team that plays direct and one that builds slowly are priced with the same zone values.
+- The case study (Figure 8) is one sequence chosen for being clear; it shows what a press can look like, not what it usually looks like.
 
 ## What the checks turned up
 
@@ -364,13 +431,21 @@ python -m xtpress.report table_1 gk
 python -m pytest tests/test_report.py -q
 ```
 
+The figures, into `figures/` (about a minute):
+
+```bash
+python -m xtpress.viz
+```
+
+Table 6 has one new row, for the figure readings (`report.figure_facts`, section `figures`).
+
 **Table 6**
 
 *Where each group of numbers in the text is computed*
 
 | Where it appears                                                                                        | Function                              | Section name           |
 | ------------------------------------------------------------------------------------------------------- | ------------------------------------- | ---------------------- |
-| The finding; Why it matters; Pressing results (median PPDA, timing of regains, where the ball is won)   | `report.pressing_overview`          | `pressing`           |
+| The findings; Why it matters; Pressing results (median PPDA, timing of regains, where the ball is won)  | `report.pressing_overview`          | `pressing`           |
 | Pressing decisions: regain window, sequence gap, high-regain line, presses in the team's own possession | `report.sensitivity`                | `sensitivity`        |
 | Pressing decisions: linking, counterpress, credit once                                                  | `report.pressing_decisions`         | `pressing_decisions` |
 | Pressing decisions (PPDA and set pieces); the wrong zone threshold in What the checks turned up         | `report.ppda_alternatives`          | `ppda`               |
@@ -382,17 +457,16 @@ python -m pytest tests/test_report.py -q
 | Position-group text, under Table 3                                                                      | `report.position_group_tests`       | `groups`             |
 | Goalkeeper text, under Table 4                                                                          | `report.goalkeeper_note`            | `gk`                 |
 | Team xT against goals (Table 5 and the paragraph below it)                                              | `report.team_xt_vs_goals`           | `xt_vs_goals`        |
+| The readings under the figures (Supporting evidence)                                                    | `report.figure_facts`               | `figures`            |
 | The bootstrap interval on PPDA against payoff                                                           | `report.bootstrap_spearman`         | (in `pressing`)      |
 
 *Note.* The bootstrap is a percentile interval over the rows with `np.random.default_rng(0)` and 4,000 resamples. "Held out" in Table 5 means cross-fitting by match inside WC 2022. Spearman is the Pearson correlation of average ranks. Two figures are quoted with a different denominator from the one the docstrings use: the fallback link agrees with the true link on 58% of all linked pressures (59.9% of those it matched), and the forward-only version on 37% (45.9%).
 
 ## Data
 
-Data provided by [StatsBomb](https://statsbomb.com/what-we-do/soccer-data/) under their
-free open data licence, available at
-[statsbomb/open-data](https://github.com/statsbomb/open-data).
+Data provided by [StatsBomb](https://statsbomb.com/what-we-do/soccer-data/) under their free open data licence, available at [statsbomb/open-data](https://github.com/statsbomb/open-data).
 
-<!-- Add the StatsBomb logo here. Attribution is a condition of the licence. -->
+[![StatsBomb](docs/statsbomb-logo.png)](https://statsbomb.com)
 
 ## Repo
 
@@ -409,5 +483,5 @@ notebooks/               exploration; kept deliberately, it shows process
 data/                    gitignored cache and processed parquet; fitted models are tracked
 figures/                 exported PNGs used above (tracked, so they render on GitHub)
 tests/                   the acceptance checks; test_report.py pins this README's numbers
-docs/                    the workbook and the project brief
+docs/                    the workbook, the project brief and the StatsBomb logo
 ```

@@ -131,9 +131,7 @@ def shot_and_move_counts(
     """
     z = zone_index(actions.start_x, actions.start_y, cols, rows)
 
-    # Create masks for negative pitch coords
-    #                  only moves
-    #                  shots that are non-penalty
+    # Rows with missing coordinates have z = -1 and are dropped from both counts.
     on_pitch = z >= 0
 
     is_move = on_pitch & _is_move(actions)
@@ -389,7 +387,7 @@ class ExpectedThreat:
         # config.GRID_*, so omitting them silently fits a 12x8 model inside
         # an ExpectedThreat(16, 12), and the sensitivity check would report
         # numbers identical to the headline model.
-        grid = dict(cols=self.cols, rows=self.rows)
+        grid = {"cols": self.cols, "rows": self.rows}
         self.s, self.m = action_probabilities(*shot_and_move_counts(actions, **grid))
         self.g = scoring_probability(actions, use_xg=use_xg, **grid)
         self.T = transition_matrix(actions, **grid)
@@ -507,10 +505,12 @@ class ExpectedThreat:
         mask = _is_move(actions) & actions.successful.to_numpy()
         rated = actions[mask].copy()
 
-        grid = dict(cols=self.cols, rows=self.rows)
+        grid = {"cols": self.cols, "rows": self.rows}
         z_start = zone_index(rated.start_x, rated.start_y, **grid)
         z_end = zone_index(rated.end_x, rated.end_y, **grid)
-        assert (z_start >= 0).all() and (z_end >= 0).all(), "a rated action maps to zone -1: missing coordinates survived the filter"
+        if (z_start < 0).any() or (z_end < 0).any():
+            raise ValueError("a rated action has missing coordinates: every successful pass and carry needs "
+                             "a start and an end location")
 
         rated["xt_start"] = self.xt[z_start]
         rated["xt_end"] = self.xt[z_end]

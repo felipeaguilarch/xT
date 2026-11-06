@@ -32,8 +32,8 @@ PITCH_WIDTH = 80.0
 # xT grid
 # --------------------------------------------------------------------------
 # Start at 12x8. At 16x12 the 192x192 transition matrix has roughly nine
-# observations per cell on ~180 matches -- treat larger grids as a sensitivity
-# check, not the headline model.
+# observations per cell on ~180 matches, and fewer on the 64 of WC 2022 alone --
+# treat larger grids as a sensitivity check, not the headline model.
 GRID_COLS = 12
 GRID_ROWS = 8
 N_ZONES = GRID_COLS * GRID_ROWS
@@ -50,7 +50,9 @@ COMPETITIONS = {
     "bundesliga_2023_24": (9, 281),
 }
 
-# Pool these to fit the grid; report on FOCUS_COMPETITION.
+# What loaders.load_actions() reads when no competition is named. The headline
+# analysis does not pool: report.build_context fits and reports on
+# FOCUS_COMPETITION alone.
 FIT_COMPETITIONS = ["wc_2022", "euro_2024", "wwc_2023"]
 FOCUS_COMPETITION = "wc_2022"
 
@@ -115,4 +117,6 @@ MIN_PRESSURED_ACTIONS = 50   # minimum sample for a press-resistance rating
 REGULATION_PERIODS = (1, 2)
 EXCLUDED_PERIODS = (5,)
 
-
+# Match minute at which each period starts. Timestamps restart at zero every period, so
+# a real minute is this plus the minutes into the period (extra time is 15 minutes a half).
+PERIOD_START_MINUTES = {1: 0, 2: 45, 3: 90, 4: 105}

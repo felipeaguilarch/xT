@@ -9,7 +9,6 @@ statsbombpy>=1.14
 # Visualisation
 matplotlib>=3.8
 mplsoccer>=1.4
-seaborn>=0.13          # leaderboard / bar charts
 
 # Workflow
 tqdm>=4.66

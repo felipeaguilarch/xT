@@ -11,6 +11,8 @@ Run as a script to build a dataset:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -347,7 +349,7 @@ def minutes_played(events: pd.DataFrame) -> pd.DataFrame:
 # Datasets
 # ---------------------------------------------------------------------------
 
-def _processed_path(competition_key: str):
+def _processed_path(competition_key: str) -> Path:
     comp_id, season_id = config.COMPETITIONS[competition_key]
     return config.PROCESSED_DIR / f"actions_{comp_id}_{season_id}.parquet"
 

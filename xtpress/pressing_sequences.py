@@ -17,8 +17,9 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from .loaders import _flag, _timestamp_seconds, _xy
+
 from . import config
+from .loaders import _flag, _timestamp_seconds, _xy
 
 
 def to_possession_frame(
@@ -90,7 +91,7 @@ def extract_pressures(events: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
-def _link_by_related_events(pressures, events):
+def _link_by_related_events(pressures: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
     """Pressures whose ``related_events`` point at an opponent event: one row each."""
     links = pressures[["id", "team_id", "related_events"]].explode("related_events")
     links = links.dropna(subset=["related_events"])
@@ -107,7 +108,7 @@ def _link_by_related_events(pressures, events):
         ["id", "action_id", "action_type", "action_player_id", "action_location"]]
 
 
-def _link_by_time_window(pressures, events):
+def _link_by_time_window(pressures: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
     """Pressures matched to the nearest opponent under_pressure event in time."""
     ev = events.assign(time_seconds=_timestamp_seconds(events["timestamp"]))
 
@@ -219,7 +220,7 @@ def build_press_sequences(
     new = gap.isna() | (gap > gap_seconds) | (p["possession"] != p["possession"].shift())
     p["sequence_id"] = new.cumsum()
 
-    seq = p.groupby("sequence_id").agg(
+    return p.groupby("sequence_id").agg(
         match_id=("match_id", "first"),
         period=("period", "first"),
         team=("team", "first"),
@@ -232,7 +233,6 @@ def build_press_sequences(
         possession=("possession", "first"),
         possession_team=("possession_team", "first"),
     ).reset_index()
-    return seq
 
 
 def label_sequence_outcomes(
@@ -290,20 +290,20 @@ def label_sequence_outcomes(
 
     # one row per possession: its FIRST event (rows are in event order)
     starts = (ev.groupby(["match_id", "possession"])
-                .agg(period=("period", "first"), t0=("time_seconds", "first"),
-                    owner=("possession_team_id", "first"), x=("x", "first"), y=("y", "first"))
-                .reset_index()
-                .rename(columns={"possession": "won_possession_id", "period": "next_period"}))
+              .agg(period=("period", "first"), t0=("time_seconds", "first"),
+                   owner=("possession_team_id", "first"), x=("x", "first"), y=("y", "first"))
+              .reset_index()
+              .rename(columns={"possession": "won_possession_id", "period": "next_period"}))
 
     # the possession right after the one being pressed
     out = sequences.assign(won_possession_id=sequences["possession"] + 1).merge(
         starts, on=["match_id", "won_possession_id"], how="left")
 
     dt = out["t0"] - out["end_time"]
-    ok = ((out["owner"] == out["team_id"])             # the next possession is the pressing team's
-        & (out["possession_team"] != out["team"])   # ...and they did not already have the ball
-        & (out["next_period"] == out["period"])     # time restarts each period
-        & dt.between(0, window))
+    ok = ((out["owner"] == out["team_id"])            # the next possession is the pressing team's
+          & (out["possession_team"] != out["team"])   # ...and they did not already have the ball
+          & (out["next_period"] == out["period"])     # time restarts each period
+          & dt.between(0, window))
 
     out["won_possession"] = ok
     out["won_high"] = ok & (out["x"] >= high_regain_min_x)

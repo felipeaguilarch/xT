@@ -36,14 +36,14 @@ import numpy as np
 import pandas as pd
 
 from . import config, loaders
-from . import pressing_sequences as ps
 from . import press_resistance as pr
+from . import pressing_sequences as ps
 from .expected_threat import ExpectedThreat, load_reference_grid, zone_index
 
 BOOTSTRAP_REPS = 4000
 BOOTSTRAP_SEED = 0
 
-# Display names for the README tables: StatsBomb gives the full legal name.
+# Display names for the README tables and the figures: StatsBomb gives the full legal name.
 SHORT_NAMES = {
     "Hirving Rodrigo Lozano Bahena": "Hirving Lozano",
     "Aziz Eraltay Behich": "Aziz Behich",
@@ -55,6 +55,18 @@ SHORT_NAMES = {
     "Damián Emiliano Martínez": "Emiliano Martínez",
     "Diogo Meireles Costa": "Diogo Costa",
     "Kylian Mbappé Lottin": "Kylian Mbappé",
+    "Raphael Dias Belloli": "Raphinha",
+    "Achraf Hakimi Mouh": "Achraf Hakimi",
+    "Cody Mathès Gakpo": "Cody Gakpo",
+    "Dayotchanculle Upamecano": "Dayot Upamecano",
+    "Theo Bernard François Hernández": "Theo Hernández",
+    "Abdelkarim Hassan Al Haj Fadlalla": "Abdelkarim Hassan",
+    "Jean-Eric Maxim Choupo-Moting": "Eric Choupo-Moting",
+    "Neymar da Silva Santos Junior": "Neymar",
+    "Salem Mohammed Al Dawsari": "Salem Al-Dawsari",
+    "Sergio Busquets i Burgos": "Sergio Busquets",
+    "Alejandro Darío Gómez": "Alejandro Gómez",
+    "Ernesto Alexis Vega Rojas": "Alexis Vega",
 }
 
 
@@ -178,13 +190,14 @@ def expected_threat_checks(ctx: Context) -> dict:
     }
 
 
-def team_xt_vs_goals(ctx: Context, reps: int = BOOTSTRAP_REPS) -> dict:
-    """Net xT per match against goals, with the grid cross-fitted by match.
+def cross_fitted_team_matches(ctx: Context) -> pd.DataFrame:
+    """One row per (match, team): net xT, goals and xG, with the grid cross-fitted by match.
 
     Matches are sorted by id and alternate between two folds; each fold is rated
     by a grid fitted on the other, so no match is rated by a grid that saw it.
     Open play, regulation time. Goals are shots flagged as goals, penalties
-    included, shootouts and extra time excluded.
+    included, shootouts and extra time excluded. Columns: ``match_id, team, xt,
+    goals, xg``. This is what ``viz.plot_team_xt_vs_goals`` draws.
     """
     a = ctx.actions
     ids = sorted(a.match_id.unique())
@@ -196,11 +209,22 @@ def team_xt_vs_goals(ctx: Context, reps: int = BOOTSTRAP_REPS) -> dict:
     reg = a[a.period.isin(config.REGULATION_PERIODS) & (a.action_type == "shot")]
     goals = reg[reg.is_goal].groupby(["match_id", "team"]).size().rename("goals").reset_index()
     xg = reg.groupby(["match_id", "team"]).xg.sum().rename("xg").reset_index()
-    tm = tm.merge(goals, how="left").merge(xg, how="left").fillna({"goals": 0, "xg": 0})
+    return tm.merge(goals, how="left").merge(xg, how="left").fillna({"goals": 0, "xg": 0})
+
+
+def team_xt_vs_goals(ctx: Context, reps: int = BOOTSTRAP_REPS) -> dict:
+    """Net xT per match against goals and xG, with the grid cross-fitted by match.
+
+    The per-match table is ``cross_fitted_team_matches``; this adds the team means,
+    the in-sample comparison and the bootstrap intervals.
+    """
+    tm = cross_fitted_team_matches(ctx)
     tt = tm.groupby("team")[["xt", "goals", "xg"]].mean()
 
     insample = ctx.rated[~ctx.rated.is_set_piece & ctx.rated.period.isin(config.REGULATION_PERIODS)]
-    insample = insample.groupby(["match_id", "team"]).xt_delta.sum().rename("xt").reset_index().merge(goals, how="left").fillna({"goals": 0})
+    insample = (insample.groupby(["match_id", "team"]).xt_delta.sum().rename("xt").reset_index()
+                .merge(tm[["match_id", "team", "goals"]], how="left")
+                .fillna({"goals": 0}))
 
     out = {"n_teams": len(tt), "n_team_matches": len(tm), "goals": int(tm.goals.sum()),
            "goalless_team_matches": int((tm.goals == 0).sum()),
@@ -212,6 +236,82 @@ def team_xt_vs_goals(ctx: Context, reps: int = BOOTSTRAP_REPS) -> dict:
             b = bootstrap_spearman(df.xt, df[target], reps=reps)
             out[f"{level}_xt_vs_{target}"] = {k: b[k] for k in ("rho", "lo", "hi")}
     return out
+
+
+def figure_facts(ctx: Context, case_study_sequence: int = 772) -> dict:
+    """The figures quoted in the sentences under the figures in the README.
+
+    ``surface``, ``convergence`` and ``reference`` are the values drawn in Figures 1 to 3;
+    ``progressors`` and ``player_actions`` those of Figures 4 and 5; ``team_xt`` the
+    teams labelled in Figure 6; ``case_study`` the sequence of Figure 8 (picked by its
+    ``sequence_id`` column) and ``leaderboard`` the position mix of Figure 10. Figures 7
+    and 9 quote numbers that ``pressing``, ``press_resistance`` and
+    ``press_resistance_standard_errors`` already give.
+    """
+    from . import viz  # drawn from here, so imported late: viz imports this module
+
+    g, ref = ctx.model.grid(), load_reference_grid()
+    baseline = ExpectedThreat(cols=config.GRID_COLS, rows=config.GRID_ROWS).fit(ctx.actions, model_loss=False)
+    steps = {"default": ctx.model.solve_iterative()[1], "baseline": baseline.solve_iterative()[1]}
+
+    table = viz.progressor_table(ctx.rated, ctx.minutes)
+    top = table.head(20)
+    actions = {}
+    for name in ("Luka Modrić", "Kylian Mbappé Lottin"):
+        best = ctx.rated[ctx.rated.player == name].nlargest(30, "xt_delta")
+        actions[short_name(name)] = best.action_type.value_counts().to_dict()
+    mbappe_carries = ctx.rated[ctx.rated.player == "Kylian Mbappé Lottin"].nlargest(30, "xt_delta")
+    mbappe_carries = mbappe_carries[mbappe_carries.action_type == "carry"]
+    gap = np.abs(g - ref)
+
+    tm = cross_fitted_team_matches(ctx)
+    teams = tm.groupby("team")[["xt", "goals"]].mean()
+
+    outfield = ctx.players[ctx.players.position_group != "GK"]
+    best20 = outfield.sort_values("score", ascending=False).head(20)
+
+    seq = ctx.sequences[ctx.sequences.sequence_id == case_study_sequence].iloc[0]
+    won = ctx.sequences[ctx.sequences.won_possession]
+    press = ctx.pressures[(ctx.pressures.match_id == seq.match_id) & (ctx.pressures.team_id == seq.team_id)
+                          & (ctx.pressures.period == seq.period)
+                          & ctx.pressures.time_seconds.between(seq.start_time, seq.end_time)]
+    poss = ctx.actions[(ctx.actions.match_id == seq.match_id) & (ctx.actions.possession == seq.won_possession_id)
+                       & (ctx.actions.team_id == seq.team_id)].sort_values("index")
+    shot = poss[poss.action_type == "shot"].iloc[0]
+    before_shot = poss[poss["index"] < shot["index"]]
+    carry = before_shot.iloc[-1]
+    return {
+        "surface": {"goal_mouth_zone_min": float(min(g[3, 11], g[4, 11])), "penalty_spot_zone": float(g[4, 10]),
+                    "halfway_zone": float(g[3, 6]), "own_third_zone": float(g[3, 1]),
+                    "published_max": float(ref.max()), "zones_above_0_05": int((g > 0.05).sum())},
+        "convergence": {"iterations": {k: len(v) for k, v in steps.items()},
+                        "rho": {k: float(v[-1] / v[-2]) for k, v in steps.items()}},
+        "reference": {"largest_gap": float(gap.max()), "zones_with_largest_gaps": int((gap > 0.07).sum()),
+                      "zones_off_by_more_than_0_01": int((gap > 0.01).sum()),
+                      "share_of_abs_error_in_largest_two": float(np.sort(gap.ravel())[-2:].sum() / gap.sum())},
+        "progressors": {"players": len(table), "teams": int(table.team.nunique()),
+                        "top3": [(short_name(p), float(v)) for p, v in zip(table.player[:3], table.total_p90[:3], strict=True)],
+                        "pass_share_of_top20": float(top.pass_p90.sum() / top.total_p90.sum()),
+                        "carry_led_in_top20": int((top.carry_p90 > top.pass_p90).sum())},
+        "player_actions": actions,
+        "mbappe_top_carries_from_left_third": int((mbappe_carries.start_y < config.PITCH_WIDTH / 3).sum()),
+        "team_xt": {t: {"xt": float(teams.xt[t]), "goals": float(teams.goals[t])}
+                    for t in ("England", "Germany", "Costa Rica")},
+        "leaderboard": {"top20_by_group": best20.position_group.value_counts().to_dict(),
+                        "mean_score_by_group": {k: float(v) for k, v in
+                                                outfield.groupby("position_group").score.mean().items()},
+                        "forward_share_of_outfield": float((outfield.position_group == "FW").mean()),
+                        "top20_n_pressured_min": int(best20.n_pressured.min()),
+                        "top20_n_pressured_max": int(best20.n_pressured.max())},
+        "case_study": {"team": seq.team, "opponent": seq.possession_team, "pressures": len(press),
+                       "duration_s": float(seq.end_time - seq.start_time),
+                       "seconds_to_regain": float(seq.seconds_to_regain), "regain_x": float(seq.regain_x),
+                       "last_presser": short_name(press.sort_values("time_seconds").player.iloc[-1]),
+                       "shooter": short_name(shot.player), "shot_xg": float(shot.xg),
+                       "carry_before_shot_yards": float(np.hypot(carry.end_x - carry.start_x, carry.end_y - carry.start_y)),
+                       "xt_gained": float(seq.xt_gained), "mean_xt_per_won_sequence": float(won.xt_gained.mean()),
+                       "share_of_sequences_with_3_plus_pressures": float((ctx.sequences.n_pressures >= 3).mean())},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -233,10 +333,12 @@ def pressing_overview(ctx: Context) -> dict:
     won = seq[seq.won_possession]
     pm = ps.ppda(ev)
     touch = ps.pressures_per_opponent_half_touch(ev)
+    pm_touch = pm.merge(touch, on=["match_id", "team_id"])
     xy_press = ctx.pressures
     per_tm = seq.groupby(["match_id", "team_id"]).size()
     boot = bootstrap_spearman(s.ppda, s.xt_per_100_pressures)
     high = won[won.won_high]
+    many = s[s.team.map(ev.groupby("team").match_id.nunique()) >= 4]       # teams with four or more matches
     return {
         "n_pressures": len(ctx.pressures), "n_sequences": len(seq),
         "won": int(seq.won_possession.sum()), "regain_rate": float(seq.won_possession.mean()),
@@ -271,14 +373,10 @@ def pressing_overview(ctx: Context) -> dict:
         "touch_ratio_min": float(touch.pressures_per_opp_half_touch.min()),
         "touch_ratio_max": float(touch.pressures_per_opp_half_touch.max()),
         "pressures_in_opponent_half": float((xy_press.x >= config.HALFWAY_X).mean()),
-        "ppda_vs_touch_team_match_rho": spearman(
-            pm.merge(touch, on=["match_id", "team_id"]).ppda,
-            pm.merge(touch, on=["match_id", "team_id"]).pressures_per_opp_half_touch),
+        "ppda_vs_touch_team_match_rho": spearman(pm_touch.ppda, pm_touch.pressures_per_opp_half_touch),
         "ppda_vs_touch_team_rho": spearman(s.ppda, s.pressures_per_opp_half_touch),
-        "teams_with_4_plus_matches": int((ev.groupby("team").match_id.nunique() >= 4).sum()),
-        "ppda_payoff_rho_4_plus_matches": spearman(
-            s[s.team.map(ev.groupby("team").match_id.nunique()) >= 4].ppda,
-            s[s.team.map(ev.groupby("team").match_id.nunique()) >= 4].xt_per_100_pressures),
+        "teams_with_4_plus_matches": len(many),
+        "ppda_payoff_rho_4_plus_matches": spearman(many.ppda, many.xt_per_100_pressures),
     }
 
 
@@ -322,7 +420,7 @@ def pressing_decisions(ctx: Context) -> dict:
     agree = {}
     for direction in ("nearest", "forward"):
         w = _window_link(sub, ev, direction).merge(related, on="id", suffixes=("_window", "_related"))
-        same_event = (w.action_id_window == w.action_id_related)
+        same_event = w.action_id_window == w.action_id_related
         agree[direction] = {
             "matched_an_action": float(len(w) / len(sub)),
             # two denominators: of the pressures the fallback matched, and of ALL pressures with a true link
@@ -495,6 +593,27 @@ def press_resistance_overview(ctx: Context) -> dict:
     }
 
 
+def press_resistance_standard_errors(ctx: Context) -> dict:
+    """Sampling noise on one player's two press-resistance axes, at the median player.
+
+    ``retention``: the binomial standard error of a retention rate over the median
+    number of pressured actions (as a proportion, so 0.046 is 4.6 points).
+    ``threat``: the spread of xT per retained move around its zone average, divided
+    by the square root of the number of retained moves a median player makes. Both
+    are what ``viz.plot_press_resistance_quadrant`` draws as its reference cross.
+    """
+    p, players = ctx.pressured, ctx.players
+    median_actions = players.n_pressured.median()
+    rate = p.retained.mean()
+    retention = (rate * (1 - rate) / median_actions) ** 0.5
+
+    moves = p[p.outcome.isin(["retained_progressed", "retained_flat"])]
+    zone = zone_index(moves.start_x, moves.start_y)
+    resid = moves.xt_delta - moves.assign(z=zone).groupby("z").xt_delta.transform("mean")
+    moves_per_player = len(moves) / len(p) * median_actions
+    return {"retention": float(retention), "threat": float(resid.std() / moves_per_player ** 0.5)}
+
+
 def split_half_reliability(ctx: Context, min_actions: int = 25) -> dict:
     """Rank correlation of each adjusted axis between odd- and even-numbered matches.
 
@@ -518,6 +637,7 @@ def press_resistance_decisions(ctx: Context, sample_match: int = 3857276) -> dic
     kept = p.retained.sum()
     sm = ev[ev.match_id == sample_match]
     sm_pressured = sm[loaders._flag(sm, "under_pressure")]
+    loo_rho, loo_max_diff = _leave_one_out(ctx)
 
     retained_moves = p[p.outcome.isin(["retained_progressed", "retained_flat"])]
     zone = zone_index(p.start_x, p.start_y)
@@ -539,7 +659,7 @@ def press_resistance_decisions(ctx: Context, sample_match: int = 3857276) -> dic
         "zone_variance_explained_xt_delta": eta_squared(retained_moves.xt_delta, zone_moves),
         "retained_moves_exactly_zero_delta": float((retained_moves.xt_delta == 0).mean()),
         "retained_moves_negative_delta": float((retained_moves.xt_delta < 0).mean()),
-        "leave_one_out_rho": _leave_one_out(ctx)[0], "leave_one_out_max_abs_diff": _leave_one_out(ctx)[1],
+        "leave_one_out_rho": loo_rho, "leave_one_out_max_abs_diff": loo_max_diff,
         "sample_match_pressured_carries": int((sm_pressured.type == "Carry").sum()),
         "sample_match_pressured_passes": int((sm_pressured.type == "Pass").sum()),
         "sample_match_pressured_ball_receipts": int((sm_pressured.type == "Ball Receipt*").sum()),
@@ -696,6 +816,7 @@ SECTIONS = {
     "table_2": table_2, "weights": score_weights,
     "table_3": table_3, "groups": position_group_tests, "table_4": table_4, "gk": goalkeeper_note,
     "xt_vs_goals": team_xt_vs_goals,
+    "figures": figure_facts,
 }
 
 

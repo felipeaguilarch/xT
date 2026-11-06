@@ -8,6 +8,7 @@ real competition -- add those fixtures as you implement them.
 from __future__ import annotations
 
 import pytest
+
 from xtpress import config
 
 # WC 2022, Canada v Morocco. The match every calibration figure in the plan
@@ -96,6 +97,7 @@ def sequences(pressures):
 def all_events(full_actions):
     """Raw events of every match ``full_actions`` covers, from the parquet cache."""
     import pandas as pd
+
     from xtpress import loaders
 
     ids = sorted(full_actions["match_id"].unique())

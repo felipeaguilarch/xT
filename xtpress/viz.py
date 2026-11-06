@@ -9,26 +9,40 @@ Each also takes ``save_as``; when given, write into ``config.FIGURES_DIR``.
 
 from __future__ import annotations
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-from matplotlib.lines import Line2D
 from matplotlib.colors import LinearSegmentedColormap, PowerNorm
+from matplotlib.lines import Line2D
 from mplsoccer import Pitch
 
 from . import config
-from .report import short_name
+from .expected_threat import ExpectedThreat, load_reference_grid
+from .report import (
+    bootstrap_spearman,
+    build_context,
+    cross_fitted_team_matches,
+    press_resistance_standard_errors,
+    short_name,
+    spearman,
+)
 
-
-SURFACE, INK2, MUTED, GRID = "#fcfcfb", "#52514e", "#898781", "#e1e0d9"
-BLUE, ORANGE, AQUA, YELLOW = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"        # categorical, in this order
+# Palette (one set of tokens, so every figure agrees)
+SURFACE, INK, INK2, MUTED, GRID, AXIS = "#fcfcfb", "#0b0b0b", "#52514e", "#898781", "#e1e0d9", "#c3c2b7"
+BLUE, ORANGE, AQUA, YELLOW = "#2a78d6", "#eb6834", "#1baf7a", "#eda100"   # categorical, in this order
+GROUP_COLOUR = {"DF": BLUE, "MF": ORANGE, "FW": AQUA, "GK": YELLOW}       # position groups, in this order
 XT_RAMP = ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"]   # light to dark blue
 XT_CMAP = LinearSegmentedColormap.from_list("xt", XT_RAMP)
 
 
+def _new_pitch() -> Pitch:
+    """The StatsBomb pitch every figure is drawn on."""
+    return Pitch(pitch_type="statsbomb", pitch_color=SURFACE, line_color=MUTED, linewidth=1, line_zorder=3)
+
+
 def _pitch(ax=None):
     """A StatsBomb pitch on ``ax`` (a new figure if None). Returns (pitch, ax)."""
-    pitch = Pitch(pitch_type="statsbomb", pitch_color=SURFACE, line_color=MUTED, linewidth=1, line_zorder=3)
+    pitch = _new_pitch()
     if ax is None:
         _, ax = pitch.draw(figsize=(10, 6.8))
     else:
@@ -37,8 +51,11 @@ def _pitch(ax=None):
 
 
 def _save(ax, save_as):
+    """Write the figure that holds ``ax`` to ``config.FIGURES_DIR / save_as``, if given."""
     if save_as:
+        config.FIGURES_DIR.mkdir(parents=True, exist_ok=True)
         ax.figure.savefig(config.FIGURES_DIR / save_as, dpi=140, bbox_inches="tight", facecolor=SURFACE)
+
 
 def _heat(ax, grid, norm):
     """Draw ``grid`` as zone rectangles under the pitch lines. Returns the mesh."""
@@ -66,15 +83,11 @@ def plot_xt_surface(grid: np.ndarray, ax=None, save_as: str | None = None):
     colour norm (``PowerNorm(0.5)``): on a linear scale everything outside the
     box looks the same colour. Label a handful of zones, not all 96.
     """
-    pitch, ax = _pitch(ax)
+    _, ax = _pitch(ax)
 
     rows, cols = grid.shape
-    x_edges = np.linspace(0, config.PITCH_LENGTH, cols + 1)
-    y_edges = np.linspace(0, config.PITCH_WIDTH, rows + 1)
-
     norm = PowerNorm(gamma=0.5, vmin=0, vmax=grid.max())
-    mesh = ax.pcolormesh(x_edges, y_edges, grid,
-                         cmap=XT_CMAP, norm=norm, zorder=2, edgecolors=SURFACE, linewidth=0.6)
+    mesh = _heat(ax, grid, norm)
 
     zone_w = config.PITCH_LENGTH / cols
     zone_h = config.PITCH_WIDTH / rows
@@ -84,14 +97,12 @@ def plot_xt_surface(grid: np.ndarray, ax=None, save_as: str | None = None):
         ax.text(x, y, f"{grid[row, col]:.3f}", ha="center", va="center", fontsize=9, zorder=4,
                 color="#ffffff" if norm(grid[row, col]) > 0.45 else "#0b0b0b")
 
-    cbar = ax.figure.colorbar(mesh, ax=ax, fraction=0.03, pad=0.02,
-                              ticks=[0.005, 0.02, 0.05, 0.1, 0.15])
+    cbar = ax.figure.colorbar(mesh, ax=ax, fraction=0.03, pad=0.02, ticks=[0.005, 0.02, 0.05, 0.1, 0.15])
     cbar.set_label("Expected Threat of a zone (square-root colour scale)", fontsize=9)
 
     ax.set_title("Threat is concentrated in the two zones in front of goal", loc="left", pad=12)
     _save(ax, save_as)
     return ax
-
 
 
 def plot_convergence(series: dict[str, list[float]], ax=None, save_as: str | None = None):
@@ -108,10 +119,13 @@ def plot_convergence(series: dict[str, list[float]], ax=None, save_as: str | Non
     This takes a dict, not one list as the scaffold did, because the figure is
     the comparison of two fits.
     """
+    colours = (BLUE, ORANGE, AQUA, YELLOW)
+    if len(series) > len(colours):
+        raise ValueError(f"plot_convergence draws at most {len(colours)} fits, got {len(series)}")
     if ax is None:
         _, ax = plt.subplots(figsize=(9, 5))
 
-    for (label, deltas), colour in zip(series.items(), [BLUE, ORANGE]):
+    for (label, deltas), colour in zip(series.items(), colours, strict=False):
         iterations = np.arange(1, len(deltas) + 1)
         ax.semilogy(iterations, deltas, color=colour, lw=2)
         rho = deltas[-1] / deltas[-2]
@@ -126,65 +140,69 @@ def plot_convergence(series: dict[str, list[float]], ax=None, save_as: str | Non
     ax.set_ylabel("largest change in any zone's value per iteration")
     ax.yaxis.grid(True, color=GRID, lw=0.8)
     ax.set_axisbelow(True)
-    ax.set_title("Each iteration shrinks the error by a constant factor, and modelling loss needs 173 steps, not 617",
-                 loc="left", pad=12, fontsize=11)
+    counts = sorted(len(d) for d in series.values())
+    title = "Each iteration shrinks the error by a constant factor"
+    if len(counts) > 1:
+        title += f", and the faster fit needs {counts[0]} steps, not {counts[-1]}"
+    ax.set_title(title, loc="left", pad=12, fontsize=11)
     _save(ax, save_as)
     return ax
 
 
-
-def plot_reference_comparison(
-    grid: np.ndarray, reference: np.ndarray, save_as: str | None = None
-):
+def plot_reference_comparison(grid: np.ndarray, reference: np.ndarray, save_as: str | None = None):
     """Your grid beside Karun Singh's, with Pearson r and MAE annotated.
 
     Measured: r = 0.996, MAE 0.0077. Put both on ONE colour scale (the
     reference's maximum, 0.257), or the difference in peak is hidden: this grid
     peaks at 0.186. A third panel, one point per zone against the published
-    value, shows r directly and that the gap is a single pair of goal-mouth
-    zones.
+    value, shows r directly. The largest gaps are the pair of goal-mouth zones
+    (0.071 each), but they hold only 19% of the absolute error: 16 zones are
+    off by more than 0.01.
 
     Three panels need their own figure, so there is no ``ax``: create the
     figure, and return it.
     """
-    r = np.corrcoef(grid.ravel(), reference.ravel())[0, 1]                               # 1
-    mae = np.abs(grid - reference).mean()                                                         # 2
+    r = np.corrcoef(grid.ravel(), reference.ravel())[0, 1]
+    mae = np.abs(grid - reference).mean()
 
-    pitch = Pitch(pitch_type="statsbomb", pitch_color=SURFACE, line_color=MUTED, linewidth=1, line_zorder=3)
+    pitch = _new_pitch()
     fig = plt.figure(figsize=(15.5, 4.6))
-    gs = fig.add_gridspec(1, 3, width_ratios=[1.3, 1.3, 0.85], wspace=0.22)                 # 3
-    norm = PowerNorm(gamma=0.5, vmin=0, vmax=reference.max())                                           # 4
+    gs = fig.add_gridspec(1, 3, width_ratios=[1.3, 1.3, 0.85], wspace=0.22)
+    norm = PowerNorm(gamma=0.5, vmin=0, vmax=reference.max())
 
     axes = []
-    for i, (g, title) in enumerate([(grid, "Grid (fitted on WC2022)"), (reference, "Karun Singh’s published grid")]):                   # 5
+    for i, (g, title) in enumerate([(grid, "Grid (fitted on WC 2022)"), (reference, "Karun Singh’s published grid")]):
         ax = fig.add_subplot(gs[0, i])
-        pitch.draw(ax=ax)                                                                    # 6
+        pitch.draw(ax=ax)
         mesh = _heat(ax, g, norm)
         ax.set_title(title, fontsize=12, pad=8)
-        ax.text(60, 84.5, f"max {g.max():.3f}", ha="center", color=INK2, fontsize=9)         # 7
+        ax.text(60, 84.5, f"max {g.max():.3f}", ha="center", color=INK2, fontsize=9)
         axes.append(ax)
     cbar = fig.colorbar(mesh, ax=axes, location="bottom", fraction=0.06, pad=0.1, shrink=0.6)
-    cbar.set_label("Expected Threat of a zone (square-root colour scale, shared by both grids)", fontsize=9)                                     # 8
+    cbar.set_label("Expected Threat of a zone (square-root colour scale, shared by both grids)", fontsize=9)
 
     ax = fig.add_subplot(gs[0, 2])
-    ax.scatter(reference.ravel(), grid.ravel(), s=22, color=BLUE, alpha=0.8, edgecolor=SURFACE)   # 9
+    ax.scatter(reference.ravel(), grid.ravel(), s=22, color=BLUE, alpha=0.8, edgecolor=SURFACE)
     lim = [0, reference.max() * 1.05]
-    ax.plot(lim, lim, color=MUTED, lw=1, ls=(0, (4, 4)))                                     # 10
-    ax.set_xlim(lim); ax.set_ylim(lim); ax.set_aspect("equal")
-    ax.set_xlabel("Karun Singh’s published grid"); ax.set_ylabel("Grid (fitted on WC2022)")
-    ax.text(0.04, 0.96, f"Pearson r = {r:.3f}\nMAE = {mae:.4f}",
-            transform=ax.transAxes, va="top", fontsize=11)                                   # 11
-    ax.yaxis.grid(True, color=GRID, lw=0.8); ax.xaxis.grid(True, color=GRID, lw=0.8)
+    ax.plot(lim, lim, color=MUTED, lw=1, ls=(0, (4, 4)))
+    ax.set_xlim(lim)
+    ax.set_ylim(lim)
+    ax.set_aspect("equal")
+    ax.set_xlabel("Karun Singh’s published grid")
+    ax.set_ylabel("Grid (fitted on WC 2022)")
+    ax.text(0.04, 0.96, f"Pearson r = {r:.3f}\nMAE = {mae:.4f}", transform=ax.transAxes, va="top", fontsize=11)
+    ax.grid(True, color=GRID, lw=0.8)
     ax.set_axisbelow(True)
     ax.set_title("Zone by zone (96 zones)", fontsize=12, pad=8)
 
-    fig.suptitle("The WC 2022 has the shape of Karun Singh's but is flatter at the goal", x=0.125, ha="left", y=1.03, fontsize=14, fontweight="bold")         # 12
-    if save_as:
-        fig.savefig(config.FIGURES_DIR / save_as, dpi=140, bbox_inches="tight", facecolor=SURFACE)
+    fig.suptitle("The surface fitted on WC 2022 has the shape of Karun Singh’s grid but is flatter at the goal",
+                 x=0.125, ha="left", y=1.03, fontsize=14, fontweight="bold")
+    _save(ax, save_as)
     return fig
 
 
-def progressor_table(rated: pd.DataFrame, minutes: pd.DataFrame, min_minutes: float = config.MIN_MINUTES) -> pd.DataFrame:
+def progressor_table(rated: pd.DataFrame, minutes: pd.DataFrame,
+                     min_minutes: float = config.MIN_MINUTES) -> pd.DataFrame:
     """One row per player: net xT per 90 from passes and from carries.
 
     This is what ``plot_top_progressors`` draws; nothing else in the package
@@ -220,7 +238,8 @@ def progressor_table(rated: pd.DataFrame, minutes: pd.DataFrame, min_minutes: fl
     table["carry_p90"] = table["carry"] / table.minutes * 90
     table["total_p90"] = table["pass_p90"] + table["carry_p90"]
 
-    return table[["player", "team", "minutes", "pass_p90", "carry_p90", "total_p90"]].sort_values("total_p90", ascending=False)
+    columns = ["player", "team", "minutes", "pass_p90", "carry_p90", "total_p90"]
+    return table[columns].sort_values("total_p90", ascending=False)
 
 
 def plot_top_progressors(table: pd.DataFrame, n: int = 20, ax=None, save_as: str | None = None):
@@ -244,8 +263,8 @@ def plot_top_progressors(table: pd.DataFrame, n: int = 20, ax=None, save_as: str
     ax.barh(y, top.carry_p90, left=top.pass_p90, height=0.62, color=ORANGE, edgecolor=SURFACE,
             linewidth=2, label="carries")
 
-    for yi, (_, row) in zip(y, top.iterrows()):
-        ax.text(row.total_p90 + 0.004, yi, f"{row.total_p90:.3f}   {int(round(row.minutes))} min",
+    for yi, (_, row) in zip(y, top.iterrows(), strict=True):
+        ax.text(row.total_p90 + 0.004, yi, f"{row.total_p90:.3f}   {row.minutes:.0f} min",
                 va="center", fontsize=9.5, color=INK2)
 
     ax.set_yticks(y)
@@ -256,19 +275,13 @@ def plot_top_progressors(table: pd.DataFrame, n: int = 20, ax=None, save_as: str
     ax.set_axisbelow(True)
     ax.tick_params(axis="y", length=0)
     ax.legend(loc="lower right", frameon=False, handlelength=1.2)
-    ax.set_title(f"Top {n} progressors with at least {config.MIN_MINUTES} minutes", loc="left",
-                  pad=12, fontsize=11)
+    ax.set_title(f"Top {n} progressors with at least {config.MIN_MINUTES} minutes", loc="left", pad=12, fontsize=11)
     _save(ax, save_as)
     return ax
 
 
-def plot_player_actions(
-    rated_actions: pd.DataFrame,
-    player: str,
-    n: int = 30,
-    ax=None,
-    save_as: str | None = None,
-):
+def plot_player_actions(rated_actions: pd.DataFrame, player: str, n: int = 30,
+                        ax=None, save_as: str | None = None):
     """One player's highest-xT actions as arrows on a pitch.
 
     ``Pitch.arrows(x_start, y_start, x_end, y_end, ...)`` with width scaled by
@@ -284,27 +297,33 @@ def plot_player_actions(
     legend; rows come from ``rate_actions``, so ``player`` is the full StatsBomb
     name and needs a display-name map.
     """
-    pitch, ax = _pitch(ax)                                                                   # 1
+    pitch, ax = _pitch(ax)
 
-    top = rated_actions[rated_actions.____ == player].nlargest(n, "____")                    # 2
+    top = rated_actions[rated_actions.player == player].nlargest(n, "xt_delta")
     biggest = top.xt_delta.max()
 
-    for kind, colour in (("pass", ____), ("carry", ____)):                                   # 3
-        for _, a in top[top.action_type == ____].iterrows():                                 # 4
-            pitch.arrows(a.start_x, a.start_y, a.____, a.____, ax=ax, color=colour, zorder=4,
-                         width=____ + ____ * np.sqrt(a.xt_delta / ____),
-                         headwidth=4, headlength=4, alpha=0.9)                               # 5
+    for kind, colour in (("pass", BLUE), ("carry", ORANGE)):
+        for _, a in top[top.action_type == kind].iterrows():
+            pitch.arrows(a.start_x, a.start_y, a.end_x, a.end_y, ax=ax, color=colour, zorder=4,
+                         width=1.6 + 2.2 * np.sqrt(a.xt_delta / biggest),
+                         headwidth=4, headlength=4, alpha=0.9)
 
-    ax.legend(handles=[Line2D([0], [0], color=BLUE, lw=3, label="____"),
-                       Line2D([0], [0], color=ORANGE, lw=3, label="____")],
-              loc="lower center", bbox_to_anchor=(0.5, -0.09), ncol=2, frameon=False)        # 6
-    ax.set_title(f"____", loc="left", pad=8)                                                 # 7
+    ax.legend(handles=[Line2D([0], [0], color=BLUE, lw=3, label="pass"),
+                       Line2D([0], [0], color=ORANGE, lw=3, label="carry")],
+              loc="lower center", bbox_to_anchor=(0.5, -0.09), ncol=2, frameon=False)
+    ax.set_title(f"{short_name(player)}: the {n} actions with most xT (arrow width shows the gain)",
+                 loc="left", pad=8, fontsize=11)
     _save(ax, save_as)
     return ax
 
 
-def plot_team_xt_vs_goals(summary: pd.DataFrame, save_as: str | None = None):
+def plot_team_xt_vs_goals(team_matches: pd.DataFrame, ax=None, save_as: str | None = None):
     """Held-out scatter of team xT against goals. The credibility image.
+
+    ``team_matches`` is ``report.cross_fitted_team_matches(ctx)``: one row per
+    (match, team) with ``team``, ``xt`` and ``goals``. Draw one point per team
+    (the mean of its matches) and compute both correlations here with
+    ``report.spearman``: across the teams, and across the team-matches.
 
     Annotate Spearman rho. Only WC 2022 is processed, so "held out" here means
     cross-fitting by match: fit the grid on the odd-numbered matches, rate the
@@ -318,13 +337,48 @@ def plot_team_xt_vs_goals(summary: pd.DataFrame, save_as: str | None = None):
     Report the number as measured, with the xG figure beside it, and do not
     caption it as validation of the xT model.
     """
-    raise NotImplementedError
+    teams = team_matches.groupby("team")[["xt", "goals"]].mean()
+    rho_team = spearman(teams.xt, teams.goals)
+    rho_match = spearman(team_matches.xt, team_matches.goals)
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(9, 6.2))
+    ax.scatter(teams.xt, teams.goals, s=60, color=BLUE, edgecolor=SURFACE, linewidth=1.5, zorder=3)
+
+    zx = (teams.xt - teams.xt.mean()) / teams.xt.std()
+    zy = (teams.goals - teams.goals.mean()) / teams.goals.std()
+    labelled = set((zx - zy).abs().nlargest(4).index) | set(teams.xt.nlargest(2).index)
+    labelled.add(teams.goals.idxmax())            # the team with the most goals per match
+    labelled.add((zx + zy).idxmin())              # the bottom-left corner: lowest xT and goals combined
+    x_span = teams.xt.max() - teams.xt.min()
+    y_span = teams.goals.max() - teams.goals.min()
+    for team in sorted(labelled):
+        x, y = teams.xt[team], teams.goals[team]
+        # a labelled neighbour just to the right would be overwritten: put this label above its point instead
+        crowded = any(0 < teams.xt[o] - x < 0.2 * x_span and abs(teams.goals[o] - y) < 0.1 * y_span
+                      for o in labelled if o != team)
+        ax.annotate(team, (x, y), xytext=(0, 8) if crowded else (6, 4), ha="center" if crowded else "left",
+                    textcoords="offset points", fontsize=9.5, color=INK2)
+
+    ax.set_xlabel("net xT created per match (open play)")
+    ax.set_ylabel("goals per match")
+    ax.grid(True, color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    ax.text(0.03, 0.96, f"Spearman rho = {rho_team:.2f} across {len(teams)} teams\n"
+                        f"rho = {rho_match:.2f} across {len(team_matches)} team-matches",
+            transform=ax.transAxes, va="top", fontsize=10.5)
+    ax.set_title("Teams that create more xT score a little more, but the link is weak", loc="left", pad=12)
+    _save(ax, save_as)
+    return ax
 
 
 # -- Part Two ---------------------------------------------------------------
 
-def plot_team_pressing(summary: pd.DataFrame, save_as: str | None = None):
+def plot_team_pressing(summary: pd.DataFrame, ax=None, save_as: str | None = None):
     """PPDA against xT per 100 pressures. Intensity versus payoff.
+
+    ``summary`` is ``report.build_context().summary``: one row per team, with
+    ``team``, ``ppda`` and ``xt_per_100_pressures``.
 
     Label the outliers only. A team that presses hard and earns little is the
     story you are looking for.
@@ -336,11 +390,44 @@ def plot_team_pressing(summary: pd.DataFrame, save_as: str | None = None):
     the figure and the README cannot disagree; the upper end moves in the second
     decimal with the seed.
     """
-    raise NotImplementedError
+    boot = bootstrap_spearman(summary.ppda, summary.xt_per_100_pressures)
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(9.5, 6.4))
+    ax.scatter(summary.ppda, summary.xt_per_100_pressures, s=60, color=BLUE, edgecolor=SURFACE, linewidth=1.5, zorder=3)
+
+    ax.axvline(summary.ppda.median(), color=MUTED, lw=1, ls=(0, (4, 4)))
+    ax.axhline(summary.xt_per_100_pressures.median(), color=MUTED, lw=1, ls=(0, (4, 4)))
+
+    s = summary.set_index("team")
+    zx = (s.ppda - s.ppda.mean()) / s.ppda.std()
+    zy = (s.xt_per_100_pressures - s.xt_per_100_pressures.mean()) / s.xt_per_100_pressures.std()
+    for team in np.hypot(zx, zy).nlargest(5).index:
+        ax.annotate(team, (s.ppda[team], s.xt_per_100_pressures[team]), xytext=(6, 4),
+                    textcoords="offset points", fontsize=10)
+
+    ax.invert_xaxis()
+    ax.set_xlabel("PPDA (passes allowed per defensive action)    presses harder →")
+    ax.set_ylabel("xT won per 100 pressures")
+    ax.grid(True, color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    ax.text(0.03, 0.97, f"Spearman rho = {boot['rho']:.2f}\n"
+                        f"95% bootstrap interval {boot['lo']:.2f} to {boot['hi']:.2f}\n"
+                        f"{len(summary)} teams", transform=ax.transAxes, va="top", fontsize=10.5)
+    ax.set_title("No clear link between pressing harder and winning more threat", loc="left", pad=12)
+    _save(ax, save_as)
+    return ax
 
 
-def plot_press_resistance_quadrant(table: pd.DataFrame, save_as: str | None = None):
+def plot_press_resistance_quadrant(table: pd.DataFrame, se: tuple[float, float],
+                                   ax=None, save_as: str | None = None):
     """The lead image: retention above expected (x) vs xT above expected (y).
+
+    ``table`` is ``report.build_context().players``. ``se`` is the standard error of
+    one player's retention and threat, in raw units (0.046 is 4.6 points): take
+    ``report.press_resistance_standard_errors(ctx)``, whose ``retention`` and
+    ``threat`` values give the tuple. The spread of players is divided by these
+    for the caption, so compute it from ``table`` rather than typing it.
 
     Draw the axes through zero so the four quadrants read immediately, label
     the extremes only, and leave everyone else as unlabelled points.
@@ -353,13 +440,63 @@ def plot_press_resistance_quadrant(table: pd.DataFrame, save_as: str | None = No
     threat about 0.0012). The spread between players is only about 1.2 and 1.3
     standard errors, which is the honest reading of the whole figure.
     """
-    raise NotImplementedError
+    k_ret = table.retention_above_expected.std() / se[0]
+    k_thr = table.xt_delta_above_expected.std() / se[1]
+
+    x = table.retention_above_expected * 100
+    y = table.xt_delta_above_expected * 1000
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(10.5, 7.4))
+    ax.scatter(x, y, s=18 + 0.35 * table.n_pressured, color=MUTED, alpha=0.55,
+               edgecolor=SURFACE, linewidth=0.8, zorder=2)
+
+    ax.axhline(0, color=AXIS, lw=1.3, zorder=1)
+    ax.axvline(0, color=AXIS, lw=1.3, zorder=1)
+
+    left = table[table.retention_above_expected < 0]      # keep the ball less than their zones predict
+    right = table[table.retention_above_expected > 0]     # keep it more than their zones predict
+    labelled = (set(table.score.nlargest(6).index) | set(table.score.nsmallest(4).index)    # the table's two ends
+                | set(table.retention_above_expected.nlargest(3).index)                      # best retention
+                | set(table.retention_above_expected.nsmallest(2).index)                     # worst retention
+                | set(table.xt_delta_above_expected.nsmallest(1).index)                      # lowest threat
+                | set(left.xt_delta_above_expected.nlargest(3).index)                        # most threat on the left half
+                | set(right.xt_delta_above_expected.nsmallest(1).index))                     # least threat on the right half
+    for i in sorted(labelled):
+        row = table.loc[i]
+        px, py = row.retention_above_expected * 100, row.xt_delta_above_expected * 1000
+        ax.scatter(px, py, s=18 + 0.35 * row.n_pressured, color=BLUE, edgecolor=SURFACE, linewidth=1, zorder=4)
+        ax.annotate(short_name(row.player), (px, py), xytext=(6, 5), textcoords="offset points",
+                    fontsize=9.5, zorder=5)
+
+    ax.margins(x=0.05, y=0.14)       # room inside the frame so the corner labels do not sit on top of the points
+    x_lo, x_hi = ax.get_xlim()
+    y_lo, y_hi = ax.get_ylim()
+    style = {"fontsize": 10.5, "color": INK2, "style": "italic"}
+    ax.text(x_hi, y_hi, "Press resistant:\nkeeps the ball and moves it forward ", ha="right", va="top", **style)
+    ax.text(x_hi, y_lo, "Recyclers:\nkeep the ball but move it less ", ha="right", va="bottom", **style)
+    ax.text(x_lo, y_hi, " Volatile:\n loses the ball more, but moves it forward when kept", ha="left", va="top", **style)
+    ax.text(x_lo, y_lo, " Weak under pressure:\n loses the ball and moves it less", ha="left", va="bottom", **style)
+
+    cx, cy = x_hi - 3.2, y_lo + 3.6
+    ax.errorbar([cx], [cy], xerr=[se[0] * 100], yerr=[se[1] * 1000], color=INK2, lw=1.5, capsize=3, zorder=6)
+    ax.text(cx, cy - se[1] * 1000 - 0.15, "typical ± 1 standard error", ha="center", va="top", fontsize=8.5, color=INK2)
+
+    ax.set_xlabel("retention vs zone expectation (percentage points)")
+    ax.set_ylabel("xT per retained move vs zone expectation (× 0.001)")
+    ax.set_title("Most of the spread between players is within what sampling noise would produce", loc="left", pad=12)
+    ax.text(0, -0.1, f"{len(table)} players with at least 50 pressured actions; point size = pressured actions. "
+                     f"The spread between players is only {k_ret:.1f} (retention) and {k_thr:.1f} (threat) standard errors.",
+            transform=ax.transAxes, fontsize=9, color=INK2)
+    _save(ax, save_as)
+    return ax
 
 
-def plot_press_resistance_leaderboard(
-    table: pd.DataFrame, n: int = 20, save_as: str | None = None
-):
+def plot_press_resistance_leaderboard(table: pd.DataFrame, n: int = 20, ax=None, save_as: str | None = None):
     """Ranked bars of the composite press-resistance score.
+
+    ``table`` is ``report.build_context().players``: it needs ``player``,
+    ``position_group``, ``n_pressured`` and ``score``.
 
     The quadrant scatter shows the structure; this answers "so who is best?",
     which is the question a reader actually arrives with. Both belong in the
@@ -386,16 +523,55 @@ def plot_press_resistance_leaderboard(
     Hassan Al Haj Fadlalla"), so keep a display-name map. Colour by group with
     DF, MF, FW, GK in that order and a legend.
     """
-    raise NotImplementedError
+    # Goalkeepers are not ranked: only 2 reach 50 pressured actions, and their "expected" retention
+    # is a blend of goalkeepers and defenders (see the README's goalkeeper note).
+    ranked = table[table.position_group != "GK"]
+    top = ranked.sort_values("score", ascending=False).head(n).iloc[::-1]
+
+    if ax is None:
+        _, ax = plt.subplots(figsize=(10, 7.6))
+    y = np.arange(len(top))
+
+    ax.barh(y, top.score, height=0.62, color=[GROUP_COLOUR[g] for g in top.position_group],
+            edgecolor=SURFACE, linewidth=2)
+    ax.axvline(0, color=INK2, lw=1.2)
+
+    for yi, (_, row) in zip(y, top.iterrows(), strict=True):
+        ax.text(row.score + 0.03, yi, f"n = {int(row.n_pressured)}", va="center", fontsize=9.5, color=INK2)
+
+    ax.set_yticks(y)
+    ax.set_yticklabels([short_name(p) for p in top.player], fontsize=10)
+    ax.tick_params(axis="y", length=0)
+    ax.set_xlim(0, top.score.max() * 1.2)
+    ax.xaxis.grid(True, color=GRID, lw=0.8)
+    ax.set_axisbelow(True)
+    ax.set_xlabel("mix of standardised retention and threat (each compared to zone expectations)")
+
+    present = [g for g in ("DF", "MF", "FW") if g in set(top.position_group)]
+    ax.legend(handles=[plt.Rectangle((0, 0), 1, 1, color=GROUP_COLOUR[g], label=g) for g in present],
+              loc="lower right", frameon=False, title="position group")
+    forwards = int((top.position_group == "FW").sum())
+    ax.set_title(f"Forwards fill {forwards} of the top {len(top)}, against "
+                 f"{(ranked.position_group == 'FW').mean():.0%} of outfield players", loc="left", pad=12)
+    ax.text(0, -0.12, "Raw estimates, not shrunk. n = pressured actions. Goalkeepers are not ranked.\n"
+                     f"Zero is the average of the {len(table)} players with at least 50 pressured actions, not 'as expected'.\n"
+                     "With about 74 actions each, rank stability across tournament halves is only "
+                     "0.26 (retention) and 0.32 (threat).",
+            transform=ax.transAxes, va="top", fontsize=9, color=INK2)
+    _save(ax, save_as)
+    return ax
 
 
-def plot_case_study(
-    sequence_id,
-    pressures: pd.DataFrame,
-    possession_actions: pd.DataFrame,
-    save_as: str | None = None,
-):
+def plot_case_study(sequence: pd.Series, pressures: pd.DataFrame, actions: pd.DataFrame,
+                    ax=None, save_as: str | None = None):
     """One pressing sequence drawn end to end: press, turnover, what followed.
+
+    ``sequence`` is one row of ``report.build_context().sequences`` (it carries the
+    match, team, period, time window, ``won_possession_id`` and the regain
+    position); ``pressures`` and ``actions`` are the whole ``ctx.pressures`` and
+    ``ctx.actions`` frames, filtered inside. Pick the row by its ``sequence_id``
+    column, never by index position: the frame is numbered from 0 and sequence 772
+    is the row labelled 771. The opponent is the row's ``possession_team``.
 
     Pressure locations as markers, the resulting possession as arrows,
     annotated with the real minute and player names. This is the figure people
@@ -419,4 +595,106 @@ def plot_case_study(
     pressures, the ball won 0.8 s later at x = 99, a shot by Raphinha with
     xG 0.42 two actions later.
     """
-    raise NotImplementedError
+    s = sequence
+
+    # Step 1: the pressures that belong to this sequence
+    pr = pressures[(pressures.match_id == s.match_id)
+                   & (pressures.team_id == s.team_id)
+                   & (pressures.period == s.period)
+                   & pressures.time_seconds.between(s.start_time, s.end_time)]
+    pr = pr.sort_values("time_seconds").reset_index(drop=True)
+    if pr.empty:
+        raise ValueError(f"no pressures found for sequence {s.get('sequence_id', '?')}")
+
+    # Step 2: the possession the press won, cut at the first shot (the shot is kept, what follows is not)
+    poss = actions[(actions.match_id == s.match_id)
+                   & (actions.possession == s.won_possession_id)
+                   & (actions.team_id == s.team_id)].sort_values("index")
+    poss = poss[poss.action_type.eq("shot").cumsum().shift(fill_value=0) == 0]
+
+    pitch, ax = _pitch(ax)
+
+    # Step 3: passes and carries as arrows
+    moves = poss[poss.action_type.isin(config.MOVE_TYPES)]
+    for kind, colour in (("pass", BLUE), ("carry", ORANGE)):
+        m = moves[moves.action_type == kind]
+        if len(m):
+            pitch.arrows(m.start_x.to_numpy(), m.start_y.to_numpy(), m.end_x.to_numpy(), m.end_y.to_numpy(),
+                         ax=ax, color=colour, zorder=4, width=2.4, headwidth=4, headlength=4, alpha=0.95)
+
+    # Step 4: the regain, taken from the sequence row
+    pitch.scatter([s.regain_x], [s.regain_y], ax=ax, marker="D", s=150, color=AQUA,
+                  edgecolor=INK, linewidth=1.5, zorder=6)
+    ax.annotate("ball won", (s.regain_x, s.regain_y), xytext=(0, -22),
+                textcoords="offset points", ha="center", fontsize=10,
+                color=INK, fontweight="bold", zorder=7)
+
+    # Step 5: the pressures, numbered in the order they happened
+    pitch.scatter(pr.x, pr.y, ax=ax, s=210, color=SURFACE, edgecolor=INK,
+                  linewidth=2, zorder=5)
+    for i, row in pr.iterrows():
+        ax.text(row.x, row.y, str(i + 1), ha="center", va="center",
+                fontsize=9, color=INK, zorder=7, fontweight="bold")
+
+    # Step 6: the shot, labelled with the shooter's short name
+    for _, shot in poss[poss.action_type == "shot"].iterrows():
+        pitch.scatter([shot.start_x], [shot.start_y], ax=ax, marker="*", s=420,
+                      color=YELLOW, edgecolor=INK, linewidth=1, zorder=6)
+        ax.annotate(f"{short_name(shot.player)}\n{'goal' if shot.is_goal else 'shot'}, "
+                    f"xG {shot.xg:.2f}", (shot.start_x, shot.start_y),
+                    xytext=(0, 18), textcoords="offset points", ha="center",
+                    fontsize=10, color=INK, fontweight="bold", zorder=7)
+
+    # Step 7: title with the real match minute, and a one-line summary
+    minute = int(config.PERIOD_START_MINUTES[int(s.period)] + pr.time_seconds.iloc[0] // 60)
+    ax.set_title(f"{s.team} v {s.possession_team}, {minute}': a press that won the ball", loc="left", pad=34)
+    ax.text(0, 1.035,
+            f"{len(pr)} pressures over {s.end_time - s.start_time:.1f} s, "
+            f"ball won {s.seconds_to_regain:.1f} s after the last one",
+            transform=ax.transAxes, fontsize=10, color=INK2, va="bottom")
+
+    _save(ax, save_as)
+    return ax
+
+
+# -- All of them ------------------------------------------------------------
+
+CASE_STUDY_SEQUENCE = 772                       # Brazil v Serbia: three pressures, a shot by Raphinha
+PLAYER_FIGURES = {"player_modric.png": "Luka Modrić", "player_mbappe.png": "Kylian Mbappé Lottin"}
+
+
+def build_all(ctx=None) -> list[str]:
+    """Regenerate every figure the README shows into ``config.FIGURES_DIR``. Returns the file names.
+
+    ``ctx`` is ``report.build_context()`` (built if None). The ten figure functions
+    write eleven files, because ``plot_player_actions`` draws two players. Run it
+    with ``python -m xtpress.viz``.
+    """
+    ctx = ctx or build_context()
+    se = press_resistance_standard_errors(ctx)
+    textbook = ExpectedThreat(cols=config.GRID_COLS, rows=config.GRID_ROWS).fit(ctx.actions, model_loss=False)
+    sequence = ctx.sequences[ctx.sequences.sequence_id == CASE_STUDY_SEQUENCE].iloc[0]
+
+    plot_xt_surface(ctx.model.grid(), save_as="xt_surface.png")
+    plot_convergence({"loss modelled (default)": ctx.model.solve_iterative()[1],
+                      "Singh’s published simplification (no loss)": textbook.solve_iterative()[1]}, save_as="convergence.png")
+    plot_reference_comparison(ctx.model.grid(), load_reference_grid(), save_as="reference_comparison.png")
+    plot_top_progressors(progressor_table(ctx.rated, ctx.minutes), save_as="top_progressors.png")
+    for file, player in PLAYER_FIGURES.items():
+        plot_player_actions(ctx.rated, player, save_as=file)
+    plot_team_xt_vs_goals(cross_fitted_team_matches(ctx), save_as="team_xt_vs_goals.png")
+    plot_team_pressing(ctx.summary, save_as="team_pressing.png")
+    plot_case_study(sequence, ctx.pressures, ctx.actions, save_as="case_study.png")
+    plot_press_resistance_quadrant(ctx.players, (se["retention"], se["threat"]),
+                                   save_as="press_resistance_quadrant.png")
+    plot_press_resistance_leaderboard(ctx.players, save_as="press_resistance_leaderboard.png")
+    plt.close("all")
+    return sorted(path.name for path in config.FIGURES_DIR.glob("*.png"))
+
+
+if __name__ == "__main__":
+    import matplotlib
+
+    matplotlib.use("Agg")
+    for name in build_all():
+        print(config.FIGURES_DIR / name)

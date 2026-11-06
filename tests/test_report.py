@@ -16,10 +16,9 @@ expensive sections (the sensitivity runs, the cross-fit) are computed once.
 """
 
 import numpy as np
-import pandas as pd
 import pytest
 
-from xtpress import config, loaders, report
+from xtpress import config, report
 from xtpress import pressing_sequences as ps
 
 approx = pytest.approx
@@ -198,7 +197,7 @@ def test_sensitivity_to_the_regain_window(sens):
     assert w[15]["regain_rate"] == approx(0.233, abs=0.0005)
     assert w[8]["regain_rate_excluding_own_possession"] == approx(0.191, abs=0.0005)
     rho = [v["ppda_payoff_rho"] for v in w.values()]
-    assert -0.24 < min(rho) and max(rho) < -0.05          # "between -0.05 and -0.23 at every window"
+    assert min(rho) > -0.24 and max(rho) < -0.05          # "between -0.05 and -0.23 at every window"
     assert w[2]["payoff_rank_rho_vs_default"] == approx(0.59, abs=0.005)
     assert min(w[k]["payoff_rank_rho_vs_default"] for k in (4, 6, 10, 12, 15)) > 0.91
 
@@ -286,6 +285,54 @@ def test_press_resistance_noise_figures(resistance):
     assert (r["zone_baseline_min_n"], r["zone_baseline_median_n"], r["zones_under_50"]) == (28, 251, 2)
     assert r["split_half"]["players"] == 65
     assert r["split_half"]["retention_rho"] == approx(0.26, abs=0.005) and r["split_half"]["threat_rho"] == approx(0.32, abs=0.005)
+
+
+def test_press_resistance_standard_errors(ctx):
+    se = report.press_resistance_standard_errors(ctx)
+    assert round(se["retention"] * 100, 1) == 4.6                          # 4.6 points, as in the README
+    assert se["threat"] == approx(0.0012, abs=0.00005)
+    players = ctx.players
+    assert players.retention_above_expected.std() / se["retention"] == approx(1.2, abs=0.05)   # the spread is 1.2 and 1.3 standard errors
+    assert players.xt_delta_above_expected.std() / se["threat"] == approx(1.3, abs=0.05)
+
+
+def test_figure_facts(ctx):
+    f = report.figure_facts(ctx)
+    s = f["surface"]
+    assert s["goal_mouth_zone_min"] == approx(0.186, abs=0.0005) and s["penalty_spot_zone"] == approx(0.089, abs=0.0005)
+    assert s["halfway_zone"] == approx(0.012, abs=0.0005) and s["own_third_zone"] == approx(0.005, abs=0.0005)
+    assert s["published_max"] == approx(0.257, abs=0.0005) and s["zones_above_0_05"] == 4
+    c = f["convergence"]
+    assert c["iterations"] == {"default": 173, "baseline": 617}
+    assert c["rho"]["default"] == approx(0.880, abs=0.0005) and c["rho"]["baseline"] == approx(0.964, abs=0.0005)
+    p = f["progressors"]
+    assert (p["players"], p["teams"]) == (52, 7)
+    assert [name for name, _ in p["top3"]] == ["Ousmane Dembélé", "Kylian Mbappé", "Lionel Messi"]
+    assert [round(v, 3) for _, v in p["top3"]] == [0.250, 0.247, 0.219]
+    assert p["pass_share_of_top20"] == approx(0.654, abs=0.0005) and p["carry_led_in_top20"] == 4
+    r = f["reference"]
+    assert r["largest_gap"] == approx(0.0715, abs=0.0005) and r["zones_with_largest_gaps"] == 2    # the two goal-mouth zones
+    assert r["zones_off_by_more_than_0_01"] == 16 and r["share_of_abs_error_in_largest_two"] == approx(0.19, abs=0.005)
+    assert f["player_actions"] == {"Luka Modrić": {"pass": 21, "carry": 9}, "Kylian Mbappé": {"carry": 18, "pass": 12}}
+    assert f["mbappe_top_carries_from_left_third"] == 17
+    t = f["team_xt"]
+    assert (round(t["England"]["goals"], 1), round(t["England"]["xt"], 2)) == (2.6, 1.11)
+    assert (round(t["Germany"]["goals"], 1), round(t["Germany"]["xt"], 2)) == (2.0, 2.05)
+    assert (round(t["Costa Rica"]["goals"], 2), round(t["Costa Rica"]["xt"], 2)) == (0.67, 0.32)
+    lb = f["leaderboard"]
+    assert lb["top20_by_group"] == {"FW": 10, "DF": 6, "MF": 4}
+    assert lb["forward_share_of_outfield"] == approx(0.373, abs=0.0005)
+    mean = lb["mean_score_by_group"]
+    assert mean["FW"] < mean["MF"] < mean["DF"]                  # forwards are not better on average, only more spread
+    assert (round(mean["FW"], 2), round(mean["MF"], 2), round(mean["DF"], 2)) == (-0.04, 0.0, 0.03)
+    assert (lb["top20_n_pressured_min"], lb["top20_n_pressured_max"]) == (50, 352)
+    k = f["case_study"]
+    assert (k["team"], k["opponent"], k["pressures"], k["shooter"]) == ("Brazil", "Serbia", 3, "Raphinha")
+    assert k["last_presser"] == "Raphinha" and k["carry_before_shot_yards"] == approx(11.0, abs=0.05)
+    assert k["duration_s"] == approx(4.9, abs=0.05) and k["seconds_to_regain"] == approx(0.8, abs=0.05)
+    assert k["regain_x"] == approx(99.1, abs=0.05) and k["shot_xg"] == approx(0.42, abs=0.005)
+    assert k["xt_gained"] == approx(0.063, abs=0.0005) and k["mean_xt_per_won_sequence"] == approx(0.0139, abs=0.00005)
+    assert k["share_of_sequences_with_3_plus_pressures"] == approx(0.067, abs=0.0005)
 
 
 def test_table_2_leaderboard(ctx):

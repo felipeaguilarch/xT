@@ -3,10 +3,11 @@ data/raw/*
 data/processed/*
 !data/**/.gitkeep
 
-# Generated figures. Uncomment the negation if you want them tracked
-# so they render in the README on GitHub (recommended for a portfolio repo).
+# Generated figures (python -m xtpress.viz). The PNGs are tracked so they
+# render in the README on GitHub.
 figures/*
 !figures/.gitkeep
+!figures/*.png
 
 # Fitted models ARE tracked -- they are small and make the repo reproducible.
 !data/models/

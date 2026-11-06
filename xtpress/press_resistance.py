@@ -95,12 +95,15 @@ def classify_outcome(pressured: pd.DataFrame) -> pd.DataFrame:
     Measured on 64 WC 2022 matches (25,270 pressured actions): retention 80.1%
     (89.0% for the same event types when not pressured; 90.2% is passes and
     carries alone, which is not the same population). Progressed 27.2%, flat
-    49.2%, dribble 3.7%, lost 19.9%. Of the retained moves 36% have an ``xt_delta`` of exactly zero
-    (the move stayed inside one zone) and 28% are negative. Sample match: 81.2%.
+    49.2%, dribble 3.7%, lost 19.9%. Of the retained moves 36% have an ``xt_delta`` of
+    exactly zero (the move stayed inside one zone) and 28% are negative. Sample
+    match: 81.2%.
     """
-    assert "xt_delta" in pressured.columns, "join the rating (xt_delta) onto the actions first"
+    if "xt_delta" not in pressured.columns:
+        raise ValueError("join the rating (xt_delta) onto the actions first")
     moves = pressured["action_type"].isin(config.MOVE_TYPES) & pressured["successful"]
-    assert pressured.loc[moves, "xt_delta"].notna().all(), "a successful pass or carry has no xt_delta"
+    if pressured.loc[moves, "xt_delta"].isna().any():
+        raise ValueError("a successful pass or carry has no xt_delta: the rating was not joined onto every action")
 
     retained = pressured["successful"]
     is_dribble = pressured["action_type"] == "dribble"
@@ -147,10 +150,10 @@ def zone_baselines(pressured: pd.DataFrame) -> pd.DataFrame:
     zone = zone_index(pressured["start_x"], pressured["start_y"], config.GRID_COLS, config.GRID_ROWS)
     valid = zone >= 0
     table = (pressured[valid].assign(zone=zone[valid])
-            .groupby("zone")
-            .agg(n=("retained", "count"),
-                expected_retention=("retained", "mean"),
-                expected_xt_delta=("xt_delta", "mean")))
+             .groupby("zone")
+             .agg(n=("retained", "count"),
+                  expected_retention=("retained", "mean"),
+                  expected_xt_delta=("xt_delta", "mean")))
     return (table.reindex(range(config.GRID_COLS * config.GRID_ROWS))
                 .rename_axis("zone").reset_index()
                 .assign(n=lambda t: t["n"].fillna(0).astype(int)))
@@ -158,7 +161,7 @@ def zone_baselines(pressured: pd.DataFrame) -> pd.DataFrame:
 
 def player_press_resistance(pressured: pd.DataFrame, baselines: pd.DataFrame,
                             minutes: pd.DataFrame | None = None,
-                            min_actions: int = config.MIN_PRESSURED_ACTIONS,) -> pd.DataFrame:
+                            min_actions: int = config.MIN_PRESSURED_ACTIONS) -> pd.DataFrame:
     """The leaderboard. One row per player.
 
     Raw columns:
@@ -205,8 +208,8 @@ def player_press_resistance(pressured: pd.DataFrame, baselines: pd.DataFrame,
     """
     # 1. compare every action with its zone's league average
     zone = zone_index(pressured["start_x"], pressured["start_y"], config.GRID_COLS, config.GRID_ROWS)
-    d = (pressured.assign(zone=zone)
-                .merge(baselines[["zone", "expected_retention", "expected_xt_delta"]], on="zone", how="left"))
+    d = pressured.assign(zone=zone).merge(
+        baselines[["zone", "expected_retention", "expected_xt_delta"]], on="zone", how="left")
     d["delta_above"] = d["xt_delta"] - d["expected_xt_delta"]
     d["player_id"] = d["player_id"].astype(int)
 
@@ -231,10 +234,10 @@ def player_press_resistance(pressured: pd.DataFrame, baselines: pd.DataFrame,
     # 4. position group
     pos = table["position"]
     table["position_group"] = np.select(
-        [pos.str.contains("keeper"), pos.str.contains("back", case=False),
-          pos.str.contains("mid", case=False)],
-          ["GK", "DF", "MF"], default="FW")
-    
+        [pos.str.contains("keeper", case=False), pos.str.contains("back", case=False),
+         pos.str.contains("mid", case=False)],
+        ["GK", "DF", "MF"], default="FW")
+
     # 5. the sample guard and the within-group percentiles
     table = table[table["n_pressured"] >= min_actions].copy()
     for col, name in [("retention_above_expected", "retention_pct"), ("xt_delta_above_expected", "threat_pct")]:
@@ -263,10 +266,10 @@ def press_resistance_score(
 
     Returns a Series aligned to ``table.index``; the input is not modified.
     """
-    axis_r = table["retention_above_expected"]                    # 1. which column is the retention axis?
-    axis_t = table["xt_delta_above_expected"]                    #    and the threat axis?
+    axis_r = table["retention_above_expected"]
+    axis_t = table["xt_delta_above_expected"]
 
-    z_r = (axis_r - axis_r.mean()) / axis_r.std()     # 2. z-score: centre, then scale
+    z_r = (axis_r - axis_r.mean()) / axis_r.std()     # z-score: centre, then scale
     z_t = (axis_t - axis_t.mean()) / axis_t.std()
 
-    return w_retention * z_r + w_threat * z_t            # 3. the weighted blend
+    return w_retention * z_r + w_threat * z_t
